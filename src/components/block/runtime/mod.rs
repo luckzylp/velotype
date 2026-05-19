@@ -384,8 +384,8 @@ impl Block {
         self.current_cache().inline_math_at(offset)
     }
 
-    pub(crate) fn has_inline_math(&self) -> bool {
-        self.record.title.has_inline_math()
+    pub(crate) fn has_mixed_inline_visuals(&self) -> bool {
+        self.record.title.has_mixed_inline_visuals()
     }
 
     pub(crate) fn inline_math_source_editing(&self) -> bool {

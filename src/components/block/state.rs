@@ -676,6 +676,7 @@ pub enum BlockEvent {
         leading: InlineTextTree,
         lines: Vec<String>,
         trailing: InlineTextTree,
+        split_physical_lines: bool,
     },
     /// Replace the current editor-level cross-block selection with text
     /// submitted through the focused block input handler.
