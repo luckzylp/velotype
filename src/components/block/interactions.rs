@@ -9,6 +9,7 @@ use gpui::*;
 
 use super::CollapsedCaretAffinity;
 use super::{Block, BlockEvent, BlockKind, InlineFormat, InlineTextTree, UndoCaptureKind};
+use crate::components::markdown::paste::should_split_plain_multiline_paste;
 use crate::components::{
     BoldSelection, CodeSelection, Copy, Cut, Delete, DeleteBack, DismissTransientUi, End,
     ExitCodeBlock, FocusNext, FocusPrev, Home, IndentBlock, ItalicSelection, MoveLeft, MoveRight,
@@ -201,6 +202,9 @@ impl Block {
     }
 
     pub(crate) fn on_newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        // Enter is ordered from special editors to rich-text splitting:
+        // table/source/code/quote-like blocks keep local newline semantics,
+        // while normal rendered blocks emit an editor-level split request.
         if self.is_table_cell() {
             cx.emit(BlockEvent::RequestTableCellMoveVertical { delta: 1 });
             return;
@@ -639,6 +643,9 @@ impl Block {
         }
 
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+            // Only rendered rich-text blocks apply paste correction. Raw/code
+            // contexts preserve bytes, and table cells flatten newlines so the
+            // surrounding table structure is not accidentally split.
             if self.editor_selection_range.is_some() {
                 cx.emit(BlockEvent::RequestReplaceCrossBlockSelection {
                     text,
@@ -673,10 +680,16 @@ impl Block {
                 let (leading, tail) = self.record.title.split_at(clean_selected.start);
                 let (_, trailing) =
                     tail.split_at(clean_selected.end.saturating_sub(clean_selected.start));
+                let lines = normalized
+                    .split('\n')
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>();
+                let split_physical_lines = should_split_plain_multiline_paste(&lines);
                 cx.emit(BlockEvent::RequestPasteMultiline {
                     leading,
-                    lines: normalized.split('\n').map(ToOwned::to_owned).collect(),
+                    lines,
                     trailing,
+                    split_physical_lines,
                 });
                 return;
             }

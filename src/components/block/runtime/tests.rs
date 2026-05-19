@@ -6,7 +6,8 @@ use super::projection::{
 };
 use crate::components::markdown::code_highlight::CodeLanguageKey;
 use crate::components::markdown::inline::{
-    InlineFragment, InlineInsertionAttributes, InlineLinkHit, InlineStyle, InlineTextTree,
+    InlineFragment, InlineInsertionAttributes, InlineLinkHit, InlineScript, InlineStyle,
+    InlineTextTree,
 };
 use crate::components::markdown::link::parse_link_reference_definitions;
 use crate::components::{Block, BlockKind, BlockRecord, Newline, TableCellPosition};
@@ -167,6 +168,33 @@ async fn inline_math_focus_uses_markdown_source_then_reparses_on_blur(cx: &mut T
         assert!(!block.uses_raw_text_editing());
         assert_eq!(block.display_text(), "bold $x^2$");
         assert_eq!(block.record.title.serialize_markdown(), "**bold** $x^2$");
+    });
+}
+
+#[gpui::test]
+async fn script_spans_focus_stay_rendered_rich(cx: &mut TestAppContext) {
+    let cx = cx.add_empty_window();
+    let block = cx.new(|cx| {
+        Block::with_record(
+            cx,
+            BlockRecord::new(
+                BlockKind::Paragraph,
+                InlineTextTree::from_markdown("x^2^ and H~2~O"),
+            ),
+        )
+    });
+
+    block.update(cx, |block, _cx| {
+        assert_eq!(block.display_text(), "x2 and H2O");
+        assert_eq!(block.inline_spans()[0].style.script, InlineScript::Normal);
+        assert_eq!(
+            block.inline_spans()[1].style.script,
+            InlineScript::Superscript
+        );
+        assert!(!block.sync_inline_math_source_edit_for_focus(true));
+        assert!(!block.uses_raw_text_editing());
+        assert_eq!(block.display_text(), "x2 and H2O");
+        assert_eq!(block.record.title.serialize_markdown(), "x^2^ and H~2~O");
     });
 }
 
@@ -448,6 +476,164 @@ async fn strikethrough_projection_only_expands_touched_span(cx: &mut TestAppCont
         block.read_with(cx, |block, _cx| block.display_text().to_string()),
         "a ~~gone~~ b"
     );
+}
+
+#[gpui::test]
+async fn script_projection_expands_only_touched_span(cx: &mut TestAppContext) {
+    let block = cx.new(|cx| {
+        Block::with_record(
+            cx,
+            BlockRecord::new(
+                BlockKind::Paragraph,
+                InlineTextTree::from_markdown("x^2^ and H~2~O"),
+            ),
+        )
+    });
+
+    block.update(cx, |block, _cx| {
+        block.selected_range = 0..0;
+        block.sync_inline_projection_for_focus(true);
+    });
+    assert_eq!(
+        block.read_with(cx, |block, _cx| block.display_text().to_string()),
+        "x2 and H2O"
+    );
+
+    block.update(cx, |block, _cx| {
+        block.selected_range = 1..1;
+        block.sync_inline_projection_for_focus(true);
+    });
+    assert_eq!(
+        block.read_with(cx, |block, _cx| block.display_text().to_string()),
+        "x^2^ and H2O"
+    );
+
+    block.update(cx, |block, _cx| {
+        block.clear_inline_projection();
+        block.selected_range = "x2 and H".len().."x2 and H".len();
+        block.sync_inline_projection_for_focus(true);
+    });
+    assert_eq!(
+        block.read_with(cx, |block, _cx| block.display_text().to_string()),
+        "x2 and H~2~O"
+    );
+}
+
+#[gpui::test]
+async fn standalone_script_projection_uses_html_marker_fallback(cx: &mut TestAppContext) {
+    let block = cx.new(|cx| {
+        Block::with_record(
+            cx,
+            BlockRecord::new(
+                BlockKind::Paragraph,
+                InlineTextTree::from_markdown("<sup>2</sup> and <sub>n</sub>"),
+            ),
+        )
+    });
+
+    block.update(cx, |block, _cx| {
+        block.selected_range = 0..0;
+        block.sync_inline_projection_for_focus(true);
+    });
+    assert_eq!(
+        block.read_with(cx, |block, _cx| block.display_text().to_string()),
+        "<sup>2</sup> and n"
+    );
+
+    block.update(cx, |block, _cx| {
+        block.clear_inline_projection();
+        block.selected_range = "2 and ".len().."2 and ".len();
+        block.sync_inline_projection_for_focus(true);
+    });
+    assert_eq!(
+        block.read_with(cx, |block, _cx| block.display_text().to_string()),
+        "2 and <sub>n</sub>"
+    );
+}
+
+#[gpui::test]
+async fn script_projection_marker_edit_unwraps_script_style(cx: &mut TestAppContext) {
+    let block = cx.new(|cx| {
+        Block::with_record(
+            cx,
+            BlockRecord::new(BlockKind::Paragraph, InlineTextTree::from_markdown("x^2^")),
+        )
+    });
+
+    block.update(cx, |block, cx| {
+        block.selected_range = 1..1;
+        block.sync_inline_projection_for_focus(true);
+        assert_eq!(block.display_text(), "x^2^");
+        block.replace_text_in_visible_range(1..2, "", None, false, cx);
+    });
+
+    block.read_with(cx, |block, _cx| {
+        assert_eq!(block.display_text(), "x2");
+        assert_eq!(block.record.title.serialize_markdown(), "x2");
+        assert!(
+            block
+                .inline_spans()
+                .iter()
+                .all(|span| span.style.script == InlineScript::Normal)
+        );
+    });
+}
+
+#[gpui::test]
+async fn subscript_projection_marker_edit_unwraps_script_style(cx: &mut TestAppContext) {
+    let block = cx.new(|cx| {
+        Block::with_record(
+            cx,
+            BlockRecord::new(BlockKind::Paragraph, InlineTextTree::from_markdown("H~2~O")),
+        )
+    });
+
+    block.update(cx, |block, cx| {
+        block.selected_range = 1..1;
+        block.sync_inline_projection_for_focus(true);
+        assert_eq!(block.display_text(), "H~2~O");
+        block.replace_text_in_visible_range(1..2, "", None, false, cx);
+    });
+
+    block.read_with(cx, |block, _cx| {
+        assert_eq!(block.display_text(), "H2O");
+        assert_eq!(block.record.title.serialize_markdown(), "H2O");
+        assert!(
+            block
+                .record
+                .title
+                .render_cache()
+                .spans()
+                .iter()
+                .all(|span| span.style.script == InlineScript::Normal)
+        );
+    });
+}
+
+#[gpui::test]
+async fn script_projection_insertion_inside_span_preserves_script_style(cx: &mut TestAppContext) {
+    let block = cx.new(|cx| {
+        Block::with_record(
+            cx,
+            BlockRecord::new(BlockKind::Paragraph, InlineTextTree::from_markdown("x^2^")),
+        )
+    });
+
+    block.update(cx, |block, cx| {
+        block.selected_range = 1..1;
+        block.sync_inline_projection_for_focus(true);
+        assert_eq!(block.display_text(), "x^2^");
+        block.replace_text_in_visible_range(3..3, "3", None, false, cx);
+    });
+
+    block.read_with(cx, |block, _cx| {
+        assert_eq!(block.display_text(), "x^23^");
+        assert_eq!(block.record.title.serialize_markdown(), "x^23^");
+        assert_eq!(
+            block.record.title.render_cache().spans()[1].style.script,
+            InlineScript::Superscript
+        );
+    });
 }
 
 #[gpui::test]
