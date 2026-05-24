@@ -2081,22 +2081,19 @@ impl Block {
     }
 
     pub fn previous_boundary(&self, offset: usize) -> usize {
-        let prev = self
-            .display_text()
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0);
-        prev
+        let text = self.display_text();
+        let mut cursor = GraphemeCursor::new(offset.min(text.len()), text.len(), true);
+        cursor.prev_boundary(text, 0).ok().flatten().unwrap_or(0)
     }
 
     pub fn next_boundary(&self, offset: usize) -> usize {
-        let next = self
-            .display_text()
-            .grapheme_indices(true)
-            .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.display_text().len());
-        next
+        let text = self.display_text();
+        let mut cursor = GraphemeCursor::new(offset.min(text.len()), text.len(), true);
+        cursor
+            .next_boundary(text, 0)
+            .ok()
+            .flatten()
+            .unwrap_or(text.len())
     }
 
     /// Reverse of `display_offset`: maps an expanded display offset
