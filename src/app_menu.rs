@@ -35,12 +35,16 @@ impl Global for AppMenuState {}
 
 fn window_title(file_path: Option<&Path>) -> SharedString {
     if let Some(path) = file_path {
+        // OsStr::to_string_lossy returns Cow<str>; calling .to_string() on
+        // it always allocates a fresh String, even for the valid-UTF-8 path
+        // (the common case). Borrow the Cow directly into format! — its
+        // Display impl writes the borrowed bytes straight into the output
+        // String, no intermediate allocation.
         format!(
             "Velotype - {}",
-            path.file_name().map_or_else(
-                || path.to_string_lossy().to_string(),
-                |name| name.to_string_lossy().to_string()
-            )
+            path.file_name()
+                .map(|name| name.to_string_lossy())
+                .unwrap_or_else(|| path.to_string_lossy())
         )
         .into()
     } else {
@@ -449,7 +453,11 @@ fn build_menus(
         recent_files
             .iter()
             .map(|path| {
-                let label = path.to_string_lossy().to_string();
+                // into_owned on a Cow<str> reuses the Cow::Owned variant
+                // (no copy) when the OS string is valid UTF-8 — the common
+                // case — and only allocates for the lossy fallback. The
+                // previous .to_string_lossy().to_string() always allocated.
+                let label = path.to_string_lossy().into_owned();
                 MenuItem::action(label.clone(), OpenRecentFile { path: label })
             })
             .collect()
