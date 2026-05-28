@@ -30,7 +30,7 @@ impl ExportFormat {
     }
 }
 
-pub(crate) use html::render_html;
+pub(crate) use html::render_html_with_base_dir;
 
 /// Renders themed PDF bytes for the current document Markdown.
 pub(crate) fn render_pdf(

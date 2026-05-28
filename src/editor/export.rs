@@ -1,8 +1,10 @@
 //! Editor-facing export flow and file writing.
 
 use std::path::{Path, PathBuf};
+use std::thread;
 
 use anyhow::Context as _;
+use futures::channel::oneshot;
 use gpui::*;
 
 use super::Editor;
@@ -46,14 +48,18 @@ impl Editor {
         markdown: &str,
         theme: &Theme,
         title: &str,
-        output_path: &Path,
+        source_base_dir: Option<&Path>,
     ) -> anyhow::Result<Vec<u8>> {
         match format {
-            ExportFormat::Html => {
-                Ok(document_export::render_html(markdown, theme, title).into_bytes())
-            }
+            ExportFormat::Html => Ok(document_export::render_html_with_base_dir(
+                markdown,
+                theme,
+                title,
+                source_base_dir,
+            )
+            .into_bytes()),
             ExportFormat::Pdf => {
-                document_export::render_pdf(markdown, theme, title, output_path.parent())
+                document_export::render_pdf(markdown, theme, title, source_base_dir)
             }
         }
     }
@@ -64,8 +70,9 @@ impl Editor {
         theme: &Theme,
         title: &str,
         path: &Path,
+        source_base_dir: Option<&Path>,
     ) -> anyhow::Result<()> {
-        let bytes = Self::render_export_bytes(format, markdown, theme, title, path)?;
+        let bytes = Self::render_export_bytes(format, markdown, theme, title, source_base_dir)?;
         std::fs::write(path, bytes).with_context(|| format!("failed to write '{}'", path.display()))
     }
 
@@ -79,7 +86,8 @@ impl Editor {
         let markdown = self.serialized_document_text(cx);
         let theme = cx.global::<ThemeManager>().current().clone();
         let title = self.export_title();
-        Self::write_export_bytes(format, &markdown, &theme, &title, path)
+        let source_base_dir = self.file_path.as_ref().and_then(|path| path.parent());
+        Self::write_export_bytes(format, &markdown, &theme, &title, path, source_base_dir)
     }
 
     pub(crate) fn export_document_via_prompt(
@@ -91,6 +99,11 @@ impl Editor {
         let markdown = self.serialized_document_text(cx);
         let theme = cx.global::<ThemeManager>().current().clone();
         let title = self.export_title();
+        let source_base_dir = self
+            .file_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf);
         let (default_dir, suggested_name) = self.export_dialog_defaults(format);
         let prompt = cx.prompt_for_new_path(&default_dir, Some(&suggested_name));
         let window_handle = window.window_handle();
@@ -115,8 +128,37 @@ impl Editor {
                 path.set_extension(format.extension());
             }
 
-            if let Err(err) = Self::write_export_bytes(format, &markdown, &theme, &title, &path) {
-                let detail = err.to_string();
+            let (sender, receiver) = oneshot::channel();
+            let spawn_result = thread::Builder::new()
+                .name("velotype-export".to_string())
+                .spawn(move || {
+                    let result = Self::write_export_bytes(
+                        format,
+                        &markdown,
+                        &theme,
+                        &title,
+                        &path,
+                        source_base_dir.as_deref(),
+                    )
+                    .map_err(|err| err.to_string());
+                    let _ = sender.send(result);
+                });
+
+            if let Err(err) = spawn_result {
+                let detail = format!("failed to start export task: {err}");
+                let _ = cx.update_window(
+                    window_handle,
+                    move |_view: AnyView, window: &mut Window, cx: &mut App| {
+                        show_export_error(window, cx, &detail);
+                    },
+                );
+                return;
+            }
+
+            let result = receiver
+                .await
+                .unwrap_or_else(|_| Err("export task stopped before reporting a result".into()));
+            if let Err(detail) = result {
                 let _ = cx.update_window(
                     window_handle,
                     move |_view: AnyView, window: &mut Window, cx: &mut App| {

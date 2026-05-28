@@ -1,45 +1,96 @@
 //! HTML document generation for Markdown export.
 
+use std::fs;
+use std::path::Path;
+
+use base64::{Engine as _, engine::general_purpose};
 use gpui::{Hsla, Rgba};
-use pulldown_cmark::{Options, Parser, html};
+use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, html};
 
 use crate::components::{
     inline_math_font_size, is_mermaid_closing_fence, parse_display_math_source,
-    parse_mermaid_fence_source, parse_mermaid_fence_start, render_latex_to_svg,
-    render_mermaid_to_svg, sanitize_html_for_export,
+    parse_html_image_block, parse_mermaid_fence_source, parse_mermaid_fence_start,
+    render_latex_to_svg, render_mermaid_to_svg, sanitize_html_for_export,
 };
+use crate::net;
 use crate::theme::{FontWeightDef, Theme};
 
 /// Builds a full HTML document with embedded CSS derived from the active theme.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn render_html(markdown: &str, theme: &Theme, title: &str) -> String {
+    render_html_with_base_dir(markdown, theme, title, None)
+}
+
+/// Builds export HTML and resolves local Markdown image paths relative to the source document.
+pub(crate) fn render_html_with_base_dir(
+    markdown: &str,
+    theme: &Theme,
+    title: &str,
+    base_dir: Option<&Path>,
+) -> String {
+    render_html_document(markdown, theme, title, base_dir, &theme_css(theme))
+}
+
+/// Builds HTML tailored for Chromium's print-to-PDF pipeline.
+pub(crate) fn render_chromium_pdf_html_with_base_dir(
+    markdown: &str,
+    theme: &Theme,
+    title: &str,
+    base_dir: Option<&Path>,
+) -> String {
+    render_html_document(
+        markdown,
+        theme,
+        title,
+        base_dir,
+        &chromium_pdf_theme_css(theme),
+    )
+}
+
+fn render_html_document(
+    markdown: &str,
+    theme: &Theme,
+    title: &str,
+    base_dir: Option<&Path>,
+    css: &str,
+) -> String {
     let document_lang = if contains_tibetan_text(markdown) || contains_tibetan_text(title) {
         "bo"
     } else {
         "en"
     };
-    let rewritten = rewrite_visible_comment_blocks(markdown);
-    let rewritten = rewrite_unsafe_html_blocks(&rewritten);
-    let rewritten = rewrite_display_math_blocks(&rewritten, theme);
-    let rewritten = rewrite_inline_math(&rewritten, theme);
-    let rewritten = rewrite_mermaid_blocks(&rewritten);
+    let body = render_browser_html_body(markdown, theme, base_dir);
+
+    format!(
+        "<!doctype html>\n<html lang=\"{}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>\n{}\n</style>\n</head>\n<body>\n<main class=\"vlt-document\">\n{}</main>\n</body>\n</html>\n",
+        document_lang,
+        escape_html(title),
+        css,
+        body,
+    )
+}
+
+fn markdown_options() -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_GFM);
+    options
+}
 
-    let parser = Parser::new_ext(&rewritten, options);
+fn render_browser_html_body(markdown: &str, theme: &Theme, base_dir: Option<&Path>) -> String {
+    let rewritten = rewrite_visible_comment_blocks(markdown);
+    let rewritten = rewrite_unsafe_html_blocks(&rewritten, base_dir);
+    let rewritten = rewrite_display_math_blocks(&rewritten, theme);
+    let rewritten = rewrite_inline_math(&rewritten, theme);
+    let rewritten = rewrite_mermaid_blocks(&rewritten);
+    let parser = Parser::new_ext(&rewritten, markdown_options())
+        .map(|event| rewrite_local_image_event(event, base_dir));
     let mut body = String::new();
     html::push_html(&mut body, parser);
-
-    format!(
-        "<!doctype html>\n<html lang=\"{}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>\n{}\n</style>\n</head>\n<body>\n<main class=\"vlt-document\">\n{}</main>\n</body>\n</html>\n",
-        document_lang,
-        escape_html(title),
-        theme_css(theme),
-        body
-    )
+    body
 }
 
 fn rewrite_visible_comment_blocks(markdown: &str) -> String {
@@ -300,7 +351,7 @@ fn looks_like_export_currency(line: &str, open: usize, close: usize, body: &str)
             && body.len() > 1)
 }
 
-fn rewrite_unsafe_html_blocks(markdown: &str) -> String {
+fn rewrite_unsafe_html_blocks(markdown: &str, base_dir: Option<&Path>) -> String {
     let lines = markdown.split('\n').collect::<Vec<_>>();
     let mut rewritten = Vec::with_capacity(lines.len());
     let mut index = 0usize;
@@ -332,7 +383,13 @@ fn rewrite_unsafe_html_blocks(markdown: &str) -> String {
 
         let end = collect_export_html_region(&lines, index, &html_start);
         let raw = lines[index..end].join("\n");
-        rewritten.push(sanitize_html_for_export(&raw));
+        if let Some(image) = parse_html_image_block(&raw) {
+            let src =
+                local_image_data_uri(&image.src, base_dir).unwrap_or_else(|| image.src.clone());
+            rewritten.push(image.to_sanitized_html_with_src(&src));
+        } else {
+            rewritten.push(sanitize_html_for_export(&raw));
+        }
         index = end;
     }
 
@@ -418,7 +475,12 @@ fn rewrite_mermaid_blocks(markdown: &str) -> String {
         let raw = lines[index..=end].join("\n");
         if let Some(source) = parse_mermaid_fence_source(&raw) {
             match render_mermaid_to_svg(&source.body) {
-                Ok(svg) => rewritten.push(format!("<div class=\"vlt-mermaid\">{svg}</div>")),
+                Ok(svg) => {
+                    let src = data_uri_for_bytes("image/svg+xml", svg.as_bytes());
+                    rewritten.push(format!(
+                        "<div class=\"vlt-mermaid\"><img alt=\"Mermaid diagram\" src=\"{src}\"></div>"
+                    ));
+                }
                 Err(_) => rewritten.push(format!(
                     "<pre class=\"vlt-mermaid-error\">{}</pre>",
                     escape_html(&raw)
@@ -431,6 +493,68 @@ fn rewrite_mermaid_blocks(markdown: &str) -> String {
     }
 
     rewritten.join("\n")
+}
+
+fn rewrite_local_image_event<'a>(event: Event<'a>, base_dir: Option<&Path>) -> Event<'a> {
+    match event {
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => {
+            let dest_url = local_image_data_uri(dest_url.as_ref(), base_dir)
+                .map(CowStr::from)
+                .unwrap_or(dest_url);
+            Event::Start(Tag::Image {
+                link_type,
+                dest_url,
+                title,
+                id,
+            })
+        }
+        event => event,
+    }
+}
+
+fn local_image_data_uri(source: &str, base_dir: Option<&Path>) -> Option<String> {
+    if source.is_empty()
+        || source.starts_with('#')
+        || source.starts_with("data:")
+        || net::is_remote_image_source(source)
+    {
+        return None;
+    }
+
+    let path = Path::new(source);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir?.join(path)
+    };
+    let mime = image_mime_from_path(&resolved)?;
+    let bytes = fs::read(&resolved).ok()?;
+    Some(data_uri_for_bytes(mime, &bytes))
+}
+
+fn image_mime_from_path(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "bmp" => Some("image/bmp"),
+        _ => None,
+    }
+}
+
+fn data_uri_for_bytes(mime: &str, bytes: &[u8]) -> String {
+    format!(
+        "data:{mime};base64,{}",
+        general_purpose::STANDARD.encode(bytes)
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -465,10 +589,14 @@ fn root_html_start(line: &str) -> Option<ExportHtmlStart> {
         return None;
     }
     Some(ExportHtmlStart {
-        self_closing: trimmed.ends_with("/>"),
+        self_closing: trimmed.ends_with("/>") || is_export_void_html_tag(&name),
         closes_same_line: trimmed.to_ascii_lowercase().contains(&format!("</{name}>")),
         name,
     })
+}
+
+fn is_export_void_html_tag(name: &str) -> bool {
+    matches!(name, "br" | "hr" | "img")
 }
 
 fn collect_export_html_region(lines: &[&str], start: usize, html: &ExportHtmlStart) -> usize {
@@ -550,6 +678,8 @@ fn theme_css(theme: &Theme) -> String {
     let c = &theme.colors;
     let d = &theme.dimensions;
     let t = &theme.typography;
+    let pre_overflow = "overflow: auto;";
+    let media_overflow = "overflow-x: auto;";
     format!(
         r#":root {{
   color-scheme: dark;
@@ -587,11 +717,7 @@ body {{
   font-size: {}px;
   line-height: {};
 }}
-.vlt-document {{
-  width: min(100% - 48px, 920px);
-  margin: 0 auto;
-  padding: 48px 0 72px;
-}}
+{}
 p, ul, ol, blockquote, pre, table, hr {{ margin: 0 0 1rem; }}
 h1, h2, h3, h4, h5, h6 {{
   margin: 1.6em 0 0.65em;
@@ -635,7 +761,7 @@ code {{
   font-size: {}px;
 }}
 pre {{
-  overflow: auto;
+  {}
   background-color: var(--vlt-code-bg);
   color: var(--vlt-code-text);
   border-radius: {}px;
@@ -656,7 +782,7 @@ pre code {{ padding: 0; background-color: transparent; }}
   display: flex;
   justify-content: center;
   margin: 1rem 0;
-  overflow-x: auto;
+  {}
 }}
 .vlt-math svg {{
   max-width: 100%;
@@ -666,11 +792,13 @@ pre code {{ padding: 0; background-color: transparent; }}
   display: flex;
   justify-content: center;
   margin: 1rem 0;
-  overflow-x: auto;
+  {}
 }}
-.vlt-mermaid svg {{
+.vlt-mermaid img {{
   max-width: 100%;
   height: auto;
+  display: block;
+  margin: 0 auto;
 }}
 .vlt-inline-math {{
   display: inline-flex;
@@ -734,9 +862,10 @@ hr {{ border: 0; border-top: 1px solid; border-color: var(--vlt-border); }}
         css_color(c.callout_warning_border),
         css_color(c.callout_caution_bg),
         css_color(c.callout_caution_border),
-        "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Serif Tibetan\", \"Noto Sans Tibetan\", \"Microsoft Himalaya\", Kailasa, \"BabelStone Tibetan\", sans-serif",
+        body_font_stack(),
         t.text_size,
         t.text_line_height,
+        document_layout_css(),
         css_font_weight(&t.h1_weight),
         css_color(c.text_h1),
         t.h1_size,
@@ -755,8 +884,74 @@ hr {{ border: 0; border-top: 1px solid; border-color: var(--vlt-border); }}
         d.callout_radius,
         "\"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace",
         t.code_size,
-        d.code_bg_radius
+        pre_overflow,
+        d.code_bg_radius,
+        media_overflow,
+        media_overflow
     )
+}
+
+fn chromium_pdf_theme_css(theme: &Theme) -> String {
+    let mut css = theme_css(theme);
+    css = css.replace(
+        document_layout_css(),
+        ".vlt-document {\n  width: auto;\n  max-width: none;\n  margin: 0;\n  padding: 0;\n}",
+    );
+    css.push_str(
+        r#"
+
+@page {
+  size: A4;
+  margin: 15mm;
+}
+
+@media print {
+  html,
+  body {
+    background-color: var(--vlt-bg);
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .vlt-document {
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  pre,
+  code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  img,
+  svg {
+    max-width: 100%;
+    height: auto;
+    break-inside: avoid;
+  }
+
+  table,
+  blockquote,
+  pre,
+  .vlt-math,
+  .vlt-mermaid {
+    break-inside: avoid;
+  }
+}
+"#,
+    );
+    css
+}
+
+fn body_font_stack() -> &'static str {
+    "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Serif Tibetan\", \"Noto Sans Tibetan\", \"Microsoft Himalaya\", Kailasa, \"BabelStone Tibetan\", sans-serif"
+}
+
+fn document_layout_css() -> &'static str {
+    ".vlt-document {\n  width: min(100% - 48px, 920px);\n  margin: 0 auto;\n  padding: 48px 0 72px;\n}"
 }
 
 fn contains_tibetan_text(text: &str) -> bool {
@@ -809,8 +1004,10 @@ fn escape_html(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_tibetan_text, render_html};
+    use super::{contains_tibetan_text, render_html, render_html_with_base_dir};
     use crate::theme::Theme;
+    use std::fs;
+    use uuid::Uuid;
 
     #[test]
     fn renders_complete_html_document_with_theme_css() {
@@ -821,27 +1018,31 @@ mod tests {
         assert!(html.contains("<title>Doc</title>"));
         assert!(html.contains("<style>"));
         assert!(html.contains("--vlt-bg:"));
+        assert!(html.contains("<main class=\"vlt-document\">"));
         assert!(html.contains("<h1>Title</h1>"));
         assert!(html.contains("<p>text</p>"));
     }
-
     #[test]
     fn detects_tibetan_text_for_document_language() {
-        assert!(contains_tibetan_text("བདག་གི"));
-        assert!(!contains_tibetan_text("中文 text"));
+        assert!(contains_tibetan_text("\u{0f56}\u{0f7c}\u{0f51}"));
+        assert!(!contains_tibetan_text("Chinese text"));
     }
 
     #[test]
     fn exports_tibetan_with_language_and_font_fallbacks() {
-        let markdown = "༄༅།།དཔལ་ལྡན།། བདག་གི།། ";
+        let markdown = concat!(
+            "\u{0f56}\u{0f7c}\u{0f51}\u{0f0b}\u{0f61}\u{0f72}\u{0f42}",
+            " ",
+            "\u{0f56}\u{0f7c}\u{0f51}\u{0f0b}\u{0f61}\u{0f72}\u{0f42} "
+        );
         let html = render_html(markdown, &Theme::default_theme(), "Doc");
 
         assert!(html.contains("<html lang=\"bo\">"));
-        assert!(html.contains("།། བདག"));
+        assert!(html.contains("\u{0f56}\u{0f7c}\u{0f51}"));
+        assert!(html.contains("\u{0f61}\u{0f72}\u{0f42}"));
         assert!(html.contains("\"Noto Serif Tibetan\""));
         assert!(html.contains("\"Microsoft Himalaya\""));
     }
-
     #[test]
     fn emits_pdf_compatible_theme_css() {
         let html = render_html("# Title\n\ntext", &Theme::default_theme(), "Doc");
@@ -954,8 +1155,69 @@ mod tests {
         );
 
         assert!(html.contains("class=\"vlt-mermaid\""));
-        assert!(html.contains("<svg"));
+        assert!(html.contains("<img alt=\"Mermaid diagram\""));
+        assert!(html.contains("data:image/svg+xml;base64,"));
         assert!(!html.contains("```mermaid\nflowchart LR\nA --&gt; B\n```"));
+    }
+
+    #[test]
+    fn exports_local_image_as_data_uri_when_base_dir_is_available() {
+        let root = std::env::temp_dir().join(format!("velotype-html-export-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp export dir");
+        fs::write(
+            root.join("diagram.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"></svg>",
+        )
+        .expect("write local image");
+
+        let html = render_html_with_base_dir(
+            "![diagram](diagram.svg)",
+            &Theme::default_theme(),
+            "Doc",
+            Some(&root),
+        );
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(html.contains("data:image/svg+xml;base64,"));
+        assert!(!html.contains("src=\"diagram.svg\""));
+    }
+
+    #[test]
+    fn exports_standalone_html_image_with_sanitized_zoom() {
+        let root = std::env::temp_dir().join(format!("velotype-html-export-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp export dir");
+        fs::write(root.join("diagram.png"), [137, 80, 78, 71]).expect("write local image");
+
+        let html = render_html_with_base_dir(
+            "<img src=\"diagram.png\" alt=\"diagram\" style=\"color:red; zoom:80%; width:10px\" />",
+            &Theme::default_theme(),
+            "Doc",
+            Some(&root),
+        );
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(html.contains("<img src=\"data:image/png;base64,"));
+        assert!(html.contains("alt=\"diagram\""));
+        assert!(html.contains("style=\"zoom: 80%;\""));
+        assert!(!html.contains("color:red"));
+        assert!(!html.contains("width:10px"));
+    }
+
+    #[test]
+    fn export_keeps_missing_local_image_path() {
+        let root = std::env::temp_dir().join(format!("velotype-html-export-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp export dir");
+
+        let html = render_html_with_base_dir(
+            "![diagram](missing.png)",
+            &Theme::default_theme(),
+            "Doc",
+            Some(&root),
+        );
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(html.contains("src=\"missing.png\""));
+        assert!(!html.contains("data:image/png;base64,"));
     }
 
     #[test]
@@ -1021,6 +1283,6 @@ mod tests {
 
         assert!(html.contains("class=\"vlt-mermaid-error\""));
         assert!(html.contains("not a real mermaid diagram ::::"));
-        assert!(!html.contains("class=\"vlt-mermaid\"><svg"));
+        assert!(!html.contains("data:image/svg+xml;base64,"));
     }
 }

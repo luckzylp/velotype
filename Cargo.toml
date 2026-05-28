@@ -1,6 +1,6 @@
 [package]
 name = "velotype"
-version = "0.4.9"
+version = "0.5.0"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -54,6 +54,7 @@ code-highlight-config = [
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22.1"
 uuid = "1.23"
 gpui = { version = "0.2", features = ["runtime_shaders"] }
 unicode-segmentation = "1.13"
@@ -63,7 +64,9 @@ schemars = "1"
 futures = "0.3"
 semver = "1"
 toml = "1"
-ironpress = "1.4"
+chromiumoxide = { version = "0.9.1", default-features = false, features = ["bytes"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+url = "2"
 pulldown-cmark = "0.13"
 cssparser = "0.37"
 directories = "6"
@@ -222,8 +225,6 @@ taffy = { opt-level = 3 }
 cosmic-text = { opt-level = 3 }
 rustybuzz = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
-resvg = { opt-level = 3 }
-usvg = { opt-level = 3 }
 zed-font-kit = { opt-level = 3 }
 unicode-segmentation = { opt-level = 3 }
 pulldown-cmark = { opt-level = 3 }
