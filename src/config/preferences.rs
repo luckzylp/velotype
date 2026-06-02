@@ -9,7 +9,6 @@ use gpui::*;
 use serde::Serialize;
 
 use super::{VelotypeConfigDirs, read_recent_files};
-use crate::app_identity::VELOTYPE_APP_ID;
 use crate::components::{
     ShortcutCategory, ShortcutCommand, ShortcutDefinition, install_keybindings,
     normalize_shortcut_config, normalize_shortcut_keys, resolved_shortcut_keys,
@@ -17,6 +16,9 @@ use crate::components::{
 };
 use crate::i18n::{I18nManager, language_id_for_locale_preferences};
 use crate::theme::{Theme, ThemeCatalogEntry, ThemeManager};
+use crate::window_chrome::{
+    custom_titlebar_height, render_custom_titlebar, velotype_window_options,
+};
 
 const DEFAULT_THEME_ID: &str = "velotype";
 const DEFAULT_LANGUAGE_ID: &str = "en-US";
@@ -446,6 +448,17 @@ impl PreferencesWindow {
 
     fn cancel(&mut self, _: &ClickEvent, window: &mut Window, _: &mut Context<Self>) {
         window.remove_window();
+    }
+
+    fn on_titlebar_close(
+        &mut self,
+        event: &ClickEvent,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        if event.standard_click() {
+            window.remove_window();
+        }
     }
 
     fn save(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1114,22 +1127,27 @@ impl PreferencesWindow {
 }
 
 impl Render for PreferencesWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<ThemeManager>().current().clone();
         let strings = cx.global::<I18nManager>().strings().clone();
         let c = &theme.colors;
         let d = &theme.dimensions;
         let t = &theme.typography;
         let can_save = self.has_unsaved_changes();
+        let window_title =
+            SharedString::from(format!("Velotype - {}", strings.preferences_window_title));
+        window.set_window_title(window_title.as_ref());
+        let titlebar_height = custom_titlebar_height(window, d);
 
-        div()
+        let content = div()
             .size_full()
+            .pt(px(titlebar_height))
+            .flex()
             .key_context("Preferences")
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::capture_shortcut_key))
             .bg(c.editor_background)
             .text_color(c.dialog_body)
-            .flex()
             .child(
                 div()
                     .w(relative(0.3))
@@ -1295,7 +1313,26 @@ impl Render for PreferencesWindow {
                                     .on_click(cx.listener(Self::save)),
                             ),
                     ),
-            )
+            );
+
+        let root = div()
+            .size_full()
+            .relative()
+            .bg(c.editor_background)
+            .child(content);
+
+        if let Some(titlebar) = render_custom_titlebar(
+            "preferences-titlebar",
+            window_title,
+            &theme,
+            window,
+            cx,
+            Self::on_titlebar_close,
+        ) {
+            root.child(titlebar)
+        } else {
+            root
+        }
     }
 }
 
@@ -1306,18 +1343,10 @@ fn open_preferences_window_with_state(
     title: String,
 ) -> WindowHandle<PreferencesWindow> {
     let bounds = Bounds::centered(None, size(px(720.0), px(480.0)), cx);
+    let window_title = SharedString::from(format!("Velotype - {title}"));
     let handle = cx
         .open_window(
-            WindowOptions {
-                app_id: Some(VELOTYPE_APP_ID.to_string()),
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(format!("Velotype - {title}").into()),
-                    ..TitlebarOptions::default()
-                }),
-                focus: true,
-                ..WindowOptions::default()
-            },
+            velotype_window_options(window_title, bounds),
             move |_window, cx| {
                 cx.new(move |cx| PreferencesWindow::new(preferences, theme_options, cx))
             },

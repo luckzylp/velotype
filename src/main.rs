@@ -19,6 +19,7 @@ mod export;
 mod i18n;
 mod net;
 mod theme;
+mod window_chrome;
 
 use app_menu::{init as init_app_menu, open_editor_window};
 use components::init_with_keybindings as init_editor;
@@ -35,6 +36,18 @@ impl AssetSource for VelotypeAssets {
             )))),
             "icon/workspace/markdown.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
                 "../assets/icon/workspace/markdown.svg"
+            )))),
+            "icon/titlebar/chrome-close.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/titlebar/chrome-close.svg"
+            )))),
+            "icon/titlebar/chrome-minimize.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/titlebar/chrome-minimize.svg"
+            )))),
+            "icon/titlebar/chrome-maximize.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/titlebar/chrome-maximize.svg"
+            )))),
+            "icon/titlebar/chrome-restore.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/titlebar/chrome-restore.svg"
             )))),
             _ => Ok(None),
         }

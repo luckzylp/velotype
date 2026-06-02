@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use gpui::*;
 
-use crate::app_identity::VELOTYPE_APP_ID;
 use crate::components::{
     AddLanguageConfig, AddThemeConfig, CheckForUpdates, ExportHtml, ExportPdf, InstallCliTool,
     NewWindow, NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile, QuitApplication,
@@ -25,6 +24,7 @@ use crate::editor::{Editor, InfoDialogKind};
 use crate::export::ExportFormat;
 use crate::i18n::I18nManager;
 use crate::theme::ThemeManager;
+use crate::window_chrome::velotype_window_options;
 
 /// Global app-menu state for platform menu lifecycle hooks.
 #[derive(Default)]
@@ -63,15 +63,7 @@ pub(crate) fn open_editor_window(
     let title = window_title(file_path.as_deref());
     let handle = cx
         .open_window(
-            WindowOptions {
-                app_id: Some(VELOTYPE_APP_ID.to_string()),
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(title),
-                    ..TitlebarOptions::default()
-                }),
-                ..WindowOptions::default()
-            },
+            velotype_window_options(title, bounds),
             move |_window, cx| cx.new(move |cx| Editor::from_markdown(cx, markdown, file_path)),
         )
         .unwrap();
