@@ -707,7 +707,10 @@ mod tests {
         );
         assert_eq!(
             resolved_shortcut_keys(&BTreeMap::new(), ShortcutCommand::WordSelectRight),
-            vec!["ctrl-shift-right".to_string(), "alt-shift-right".to_string()]
+            vec![
+                "ctrl-shift-right".to_string(),
+                "alt-shift-right".to_string()
+            ]
         );
     }
 

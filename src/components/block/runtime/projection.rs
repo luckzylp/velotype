@@ -765,10 +765,8 @@ impl ExpandedInlineProjection {
     /// just-typed closing marker.
     pub(super) fn caret_closes_span_at_clean(&self, clean: usize) -> bool {
         self.segments.iter().any(|segment| {
-            matches!(
-                segment.kind,
-                ExpandedInlineSegmentKind::ClosingDelimiter(_)
-            ) && segment.clean_range.start == clean
+            matches!(segment.kind, ExpandedInlineSegmentKind::ClosingDelimiter(_))
+                && segment.clean_range.start == clean
         })
     }
 

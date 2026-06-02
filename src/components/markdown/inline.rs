@@ -3291,7 +3291,12 @@ mod tests {
         let bold_italic = InlineTextTree::from_markdown("***x***");
         assert_eq!(bold_italic.visible_text(), "x");
         let spans = bold_italic.render_cache();
-        assert!(spans.spans().iter().all(|span| span.style.bold && span.style.italic));
+        assert!(
+            spans
+                .spans()
+                .iter()
+                .all(|span| span.style.bold && span.style.italic)
+        );
     }
 
     #[test]

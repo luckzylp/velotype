@@ -1633,12 +1633,9 @@ impl Block {
         // caret after the new closing marker so typing continues as plain text.
         if caret_may_have_closed_span
             && next_selected_clean.is_empty()
-            && self
-                .projection
-                .as_ref()
-                .is_some_and(|projection| {
-                    projection.caret_closes_span_at_clean(next_selected_clean.start)
-                })
+            && self.projection.as_ref().is_some_and(|projection| {
+                projection.caret_closes_span_at_clean(next_selected_clean.start)
+            })
         {
             collapsed_affinity = CollapsedCaretAffinity::OuterEnd;
         }

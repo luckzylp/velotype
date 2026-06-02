@@ -716,7 +716,12 @@ impl Block {
         self.select_to(self.next_word_start(self.cursor_offset()), cx);
     }
 
-    pub(crate) fn on_block_up(&mut self, _: &BlockUp, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_block_up(
+        &mut self,
+        _: &BlockUp,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.emit(BlockEvent::RequestBlockUp);
     }
 

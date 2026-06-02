@@ -389,7 +389,15 @@ async fn paragraph_shortcut_creates_parenthesized_numbered_list_directly(cx: &mu
     let block = cx.new(|cx| Block::with_record(cx, BlockRecord::paragraph(String::new())));
 
     block.update(cx, |block, cx| {
-        block.apply_title_edit(InlineTextTree::plain("1) item"), 7, None, None, None, false, cx);
+        block.apply_title_edit(
+            InlineTextTree::plain("1) item"),
+            7,
+            None,
+            None,
+            None,
+            false,
+            cx,
+        );
     });
 
     let kind = block.read_with(cx, |block, _cx| block.kind());
@@ -409,7 +417,15 @@ async fn bullet_shortcut_upgrades_to_task_item_after_box_prefix(cx: &mut TestApp
     assert_eq!(kind, BlockKind::BulletedListItem);
 
     block.update(cx, |block, cx| {
-        block.apply_title_edit(InlineTextTree::plain("[ ] "), 4, None, None, None, false, cx);
+        block.apply_title_edit(
+            InlineTextTree::plain("[ ] "),
+            4,
+            None,
+            None,
+            None,
+            false,
+            cx,
+        );
     });
 
     let kind = block.read_with(cx, |block, _cx| block.kind());
@@ -823,13 +839,7 @@ async fn typing_bold_markers_char_by_char_produces_bold_not_italic(cx: &mut Test
         block.sync_inline_projection_for_focus(true);
         for ch in "**bold**".chars() {
             let caret = block.cursor_offset();
-            block.replace_text_in_visible_range(
-                caret..caret,
-                &ch.to_string(),
-                None,
-                false,
-                cx,
-            );
+            block.replace_text_in_visible_range(caret..caret, &ch.to_string(), None, false, cx);
         }
     });
 
@@ -865,13 +875,7 @@ async fn typing_after_closing_italic_marker_inserts_plain_text(cx: &mut TestAppC
         block.sync_inline_projection_for_focus(true);
         for ch in "*italic* x".chars() {
             let caret = block.cursor_offset();
-            block.replace_text_in_visible_range(
-                caret..caret,
-                &ch.to_string(),
-                None,
-                false,
-                cx,
-            );
+            block.replace_text_in_visible_range(caret..caret, &ch.to_string(), None, false, cx);
         }
     });
 
@@ -885,7 +889,10 @@ async fn typing_after_closing_italic_marker_inserts_plain_text(cx: &mut TestAppC
             .fragments
             .iter()
             .any(|fragment| fragment.text.contains('x') && fragment.style.italic);
-        assert!(!trailing_is_italic, "text after closing `*` must not be italic");
+        assert!(
+            !trailing_is_italic,
+            "text after closing `*` must not be italic"
+        );
     });
 }
 
@@ -904,13 +911,7 @@ async fn typing_after_closing_bold_marker_inserts_plain_text(cx: &mut TestAppCon
         block.sync_inline_projection_for_focus(true);
         for ch in "**bold** more".chars() {
             let caret = block.cursor_offset();
-            block.replace_text_in_visible_range(
-                caret..caret,
-                &ch.to_string(),
-                None,
-                false,
-                cx,
-            );
+            block.replace_text_in_visible_range(caret..caret, &ch.to_string(), None, false, cx);
         }
     });
 
@@ -923,7 +924,10 @@ async fn typing_after_closing_bold_marker_inserts_plain_text(cx: &mut TestAppCon
             .fragments
             .iter()
             .any(|fragment| fragment.text.contains("more") && fragment.style.bold);
-        assert!(!trailing_is_bold, "text after closing `**` must not be bold");
+        assert!(
+            !trailing_is_bold,
+            "text after closing `**` must not be bold"
+        );
     });
 }
 
