@@ -10,10 +10,10 @@ use anyhow::Context as _;
 use gpui::*;
 
 use crate::components::{
-    AddLanguageConfig, AddThemeConfig, CheckForUpdates, ExportHtml, ExportPdf, InstallCliTool,
-    NewWindow, NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile, QuitApplication,
-    SaveDocument, SaveDocumentAs, SelectLanguage, SelectTheme, ShowAbout, ToggleWorkspace,
-    UninstallCliTool,
+    AddLanguageConfig, AddThemeConfig, CheckForUpdates, CloseWindow, ExportHtml, ExportPdf,
+    InstallCliTool, NewWindow, NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile,
+    QuitApplication, SaveDocument, SaveDocumentAs, SelectLanguage, SelectTheme, ShowAbout,
+    ToggleWorkspace, UninstallCliTool,
 };
 use crate::config::{
     apply_configured_language, apply_configured_theme, import_language_config_and_select,
@@ -401,6 +401,7 @@ fn is_editor_scoped_menu_action(action: &dyn Action) -> bool {
         || action.as_any().is::<ExportHtml>()
         || action.as_any().is::<ExportPdf>()
         || action.as_any().is::<QuitApplication>()
+        || action.as_any().is::<CloseWindow>()
         || action.as_any().is::<CheckForUpdates>()
         || action.as_any().is::<ShowAbout>()
         || action.as_any().is::<InstallCliTool>()
@@ -471,6 +472,31 @@ fn request_close_current_editor_window(cx: &mut App) {
             return;
         }
     }
+}
+
+pub(crate) fn request_quit_application(cx: &mut App) {
+    let candidates = current_window_candidates(cx);
+    if candidates.is_empty() {
+        cx.quit();
+        return;
+    }
+
+    for window in candidates {
+        let Some(window) = window.downcast::<Editor>() else {
+            continue;
+        };
+
+        let should_close = window
+            .update(cx, |editor, window, cx| {
+                editor.on_window_should_close(window, cx)
+            })
+            .unwrap_or(false);
+        if !should_close {
+            return;
+        }
+    }
+
+    cx.quit();
 }
 
 /// Executes one of the app-menu actions against the current application state.
@@ -547,6 +573,8 @@ pub(crate) fn dispatch_menu_action(action: &dyn Action, cx: &mut App) {
             editor.toggle_workspace_drawer(window, cx);
         });
     } else if action.as_any().is::<QuitApplication>() {
+        request_quit_application(cx);
+    } else if action.as_any().is::<CloseWindow>() {
         request_close_current_editor_window(cx);
     }
 }
@@ -596,6 +624,8 @@ pub(crate) fn dispatch_menu_action_for_editor(
             editor.export_document_via_prompt(ExportFormat::Pdf, window, cx);
         });
     } else if action.as_any().is::<QuitApplication>() {
+        request_quit_application(cx);
+    } else if action.as_any().is::<CloseWindow>() {
         let _ = target.update(cx, |editor, cx| {
             editor.request_close_current_window(window, cx);
         });
@@ -710,6 +740,7 @@ fn build_menus(
                 name: strings.menu_file.into(),
                 items: vec![
                     MenuItem::action(strings.menu_new_window.clone(), NewWindow),
+                    MenuItem::action(strings.menu_close_window.clone(), CloseWindow),
                     MenuItem::action(strings.menu_open_file.clone(), OpenFile),
                     MenuItem::submenu(Menu {
                         name: strings.menu_open_recent_file.clone().into(),
@@ -729,6 +760,7 @@ fn build_menus(
             name: strings.menu_file.into(),
             items: vec![
                 MenuItem::action(strings.menu_new_window.clone(), NewWindow),
+                MenuItem::action(strings.menu_close_window.clone(), CloseWindow),
                 MenuItem::action(strings.menu_open_file.clone(), OpenFile),
                 MenuItem::submenu(Menu {
                     name: strings.menu_open_recent_file.clone().into(),
@@ -1051,6 +1083,9 @@ pub(crate) fn init(cx: &mut App) {
     cx.on_action(|_: &QuitApplication, cx| {
         dispatch_menu_action(&QuitApplication, cx);
     });
+    cx.on_action(|_: &CloseWindow, cx| {
+        dispatch_menu_action(&CloseWindow, cx);
+    });
 
     install_menus(cx);
     cx.activate(true);
@@ -1060,9 +1095,9 @@ pub(crate) fn init(cx: &mut App) {
 mod tests {
     use super::{applescript_string_literal, build_menus};
     use crate::components::{
-        AddLanguageConfig, AddThemeConfig, CheckForUpdates, ExportHtml, ExportPdf, NewWindow,
-        NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile, QuitApplication, SaveDocument,
-        SelectLanguage, SelectTheme, ShowAbout,
+        AddLanguageConfig, AddThemeConfig, CheckForUpdates, CloseWindow, ExportHtml, ExportPdf,
+        NewWindow, NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile, QuitApplication,
+        SaveDocument, SelectLanguage, SelectTheme, ShowAbout,
     };
     use crate::i18n::I18nManager;
     use crate::theme::ThemeManager;
@@ -1164,20 +1199,26 @@ mod tests {
         // Open Recent File submenu location differs by platform.
         #[cfg(target_os = "macos")]
         assert_eq!(
-            submenu(&menus[1].items[2]).name.to_string(),
+            submenu(&menus[1].items[3]).name.to_string(),
             "Open Recent File"
         );
         #[cfg(not(target_os = "macos"))]
         assert_eq!(
-            submenu(&menus[0].items[2]).name.to_string(),
+            submenu(&menus[0].items[3]).name.to_string(),
             "Open Recent File"
         );
+
+        // Close Window is colocated with New Window in the File menu.
+        #[cfg(target_os = "macos")]
+        assert_eq!(action_name(&menus[1].items[1]), "Close Window");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(action_name(&menus[0].items[1]), "Close Window");
 
         // Preferences location differs by platform.
         #[cfg(target_os = "macos")]
         assert_eq!(action_name(&menus[0].items[0]), "Preferences");
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(action_name(&menus[0].items[3]), "Preferences");
+        assert_eq!(action_name(&menus[0].items[4]), "Preferences");
 
         assert_eq!(action_name(&menus[EXPORT_IDX].items[0]), "HTML");
         assert_eq!(action_name(&menus[EXPORT_IDX].items[1]), "PDF");
@@ -1200,12 +1241,12 @@ mod tests {
 
         #[cfg(target_os = "macos")]
         assert_eq!(
-            submenu(&menus[1].items[2]).name.to_string(),
+            submenu(&menus[1].items[3]).name.to_string(),
             i18n_manager.strings().menu_open_recent_file.as_str()
         );
         #[cfg(not(target_os = "macos"))]
         assert_eq!(
-            submenu(&menus[0].items[2]).name.to_string(),
+            submenu(&menus[0].items[3]).name.to_string(),
             i18n_manager.strings().menu_open_recent_file.as_str()
         );
 
@@ -1284,12 +1325,12 @@ mod tests {
         let i18n_manager = I18nManager::default();
         let menus = build_menus(&theme_manager, &i18n_manager, &[]);
 
-        // On macOS: File menu is index 1, Open Recent is item 2 within it.
-        // On other platforms: File menu is index 0, Open Recent is item 2.
+        // On macOS: File menu is index 1, Open Recent is item 3 within it.
+        // On other platforms: File menu is index 0, Open Recent is item 3.
         #[cfg(target_os = "macos")]
-        let recent_menu = submenu(&menus[1].items[2]);
+        let recent_menu = submenu(&menus[1].items[3]);
         #[cfg(not(target_os = "macos"))]
-        let recent_menu = submenu(&menus[0].items[2]);
+        let recent_menu = submenu(&menus[0].items[3]);
 
         assert_eq!(recent_menu.name.to_string(), "Open Recent File");
         assert_eq!(recent_menu.items.len(), 1);
@@ -1313,9 +1354,9 @@ mod tests {
         let menus = build_menus(&theme_manager, &i18n_manager, &recent_files);
 
         #[cfg(target_os = "macos")]
-        let recent_menu = submenu(&menus[1].items[2]);
+        let recent_menu = submenu(&menus[1].items[3]);
         #[cfg(not(target_os = "macos"))]
-        let recent_menu = submenu(&menus[0].items[2]);
+        let recent_menu = submenu(&menus[0].items[3]);
 
         assert_eq!(recent_menu.items.len(), 2);
         assert_eq!(action_name(&recent_menu.items[0]), r"C:\docs\one.md");
@@ -1344,6 +1385,7 @@ mod tests {
         assert!(super::is_window_context_menu_action(&AddThemeConfig));
         assert!(super::is_window_context_menu_action(&SaveDocument));
         assert!(super::is_window_context_menu_action(&QuitApplication));
+        assert!(super::is_window_context_menu_action(&CloseWindow));
         assert!(!super::is_window_context_menu_action(&SelectTheme {
             theme_id: "velotype".into(),
         }));
