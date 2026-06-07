@@ -174,6 +174,15 @@ impl Editor {
     pub(crate) fn on_quit_application(
         &mut self,
         _: &crate::components::QuitApplication,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::app_menu::request_quit_application(cx);
+    }
+
+    pub(crate) fn on_close_window(
+        &mut self,
+        _: &crate::components::CloseWindow,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

@@ -10,10 +10,10 @@ use anyhow::Context as _;
 use gpui::*;
 
 use crate::components::{
-    AddLanguageConfig, AddThemeConfig, CheckForUpdates, ExportHtml, ExportPdf, InstallCliTool,
-    NewWindow, NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile, QuitApplication,
-    SaveDocument, SaveDocumentAs, SelectLanguage, SelectTheme, ShowAbout, ToggleWorkspace,
-    UninstallCliTool,
+    AddLanguageConfig, AddThemeConfig, CheckForUpdates, CloseWindow, ExportHtml, ExportPdf,
+    InstallCliTool, NewWindow, NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile,
+    QuitApplication, SaveDocument, SaveDocumentAs, SelectLanguage, SelectTheme, ShowAbout,
+    ToggleWorkspace, UninstallCliTool,
 };
 use crate::config::{
     apply_configured_language, apply_configured_theme, import_language_config_and_select,
@@ -401,6 +401,7 @@ fn is_editor_scoped_menu_action(action: &dyn Action) -> bool {
         || action.as_any().is::<ExportHtml>()
         || action.as_any().is::<ExportPdf>()
         || action.as_any().is::<QuitApplication>()
+        || action.as_any().is::<CloseWindow>()
         || action.as_any().is::<CheckForUpdates>()
         || action.as_any().is::<ShowAbout>()
         || action.as_any().is::<InstallCliTool>()
@@ -471,6 +472,31 @@ fn request_close_current_editor_window(cx: &mut App) {
             return;
         }
     }
+}
+
+pub(crate) fn request_quit_application(cx: &mut App) {
+    let candidates = current_window_candidates(cx);
+    if candidates.is_empty() {
+        cx.quit();
+        return;
+    }
+
+    for window in candidates {
+        let Some(window) = window.downcast::<Editor>() else {
+            continue;
+        };
+
+        let should_close = window
+            .update(cx, |editor, window, cx| {
+                editor.on_window_should_close(window, cx)
+            })
+            .unwrap_or(false);
+        if !should_close {
+            return;
+        }
+    }
+
+    cx.quit();
 }
 
 /// Executes one of the app-menu actions against the current application state.
@@ -547,6 +573,8 @@ pub(crate) fn dispatch_menu_action(action: &dyn Action, cx: &mut App) {
             editor.toggle_workspace_drawer(window, cx);
         });
     } else if action.as_any().is::<QuitApplication>() {
+        request_quit_application(cx);
+    } else if action.as_any().is::<CloseWindow>() {
         request_close_current_editor_window(cx);
     }
 }
@@ -596,6 +624,8 @@ pub(crate) fn dispatch_menu_action_for_editor(
             editor.export_document_via_prompt(ExportFormat::Pdf, window, cx);
         });
     } else if action.as_any().is::<QuitApplication>() {
+        request_quit_application(cx);
+    } else if action.as_any().is::<CloseWindow>() {
         let _ = target.update(cx, |editor, cx| {
             editor.request_close_current_window(window, cx);
         });
@@ -692,11 +722,45 @@ fn build_menus(
             .collect()
     };
 
-    vec![
-        Menu {
+    #[cfg(target_os = "macos")]
+    let initial_menus = {
+        // On macOS, the first menu is the app menu (macOS overrides its title
+        // with the app name). File operations go in a separate "File" menu to
+        // match standard macOS conventions.
+        vec![
+            Menu {
+                name: "Velotype".into(),
+                items: vec![
+                    MenuItem::action(strings.menu_preferences.clone(), OpenPreferences),
+                    MenuItem::separator(),
+                    MenuItem::action(strings.menu_quit.clone(), QuitApplication),
+                ],
+            },
+            Menu {
+                name: strings.menu_file.into(),
+                items: vec![
+                    MenuItem::action(strings.menu_new_window.clone(), NewWindow),
+                    MenuItem::action(strings.menu_close_window.clone(), CloseWindow),
+                    MenuItem::action(strings.menu_open_file.clone(), OpenFile),
+                    MenuItem::submenu(Menu {
+                        name: strings.menu_open_recent_file.clone().into(),
+                        items: recent_items,
+                    }),
+                    MenuItem::separator(),
+                    MenuItem::action(strings.menu_save.clone(), SaveDocument),
+                    MenuItem::action(strings.menu_save_as.clone(), SaveDocumentAs),
+                ],
+            },
+        ]
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    let initial_menus = {
+        vec![Menu {
             name: strings.menu_file.into(),
             items: vec![
                 MenuItem::action(strings.menu_new_window.clone(), NewWindow),
+                MenuItem::action(strings.menu_close_window.clone(), CloseWindow),
                 MenuItem::action(strings.menu_open_file.clone(), OpenFile),
                 MenuItem::submenu(Menu {
                     name: strings.menu_open_recent_file.clone().into(),
@@ -709,7 +773,44 @@ fn build_menus(
                 MenuItem::separator(),
                 MenuItem::action(strings.menu_quit.clone(), QuitApplication),
             ],
-        },
+        }]
+    };
+
+    #[cfg(target_os = "macos")]
+    let help_items = {
+        // Show different menu item depending on whether CLI is already
+        // installed pointing to the current app.  Only portable
+        // installations (drag-installed .app bundles) need this —
+        // pkg-installed apps manage the symlink via postinstall.
+        let cli_installed = is_cli_symlink_current_app();
+        let mut items = vec![
+            MenuItem::action(strings.menu_check_updates.clone(), CheckForUpdates),
+            MenuItem::separator(),
+        ];
+        if cli_installed {
+            items.push(MenuItem::action(
+                SharedString::new(strings.menu_uninstall_cli_tool.as_str()),
+                UninstallCliTool,
+            ));
+        } else {
+            items.push(MenuItem::action(
+                SharedString::new(strings.menu_install_cli_tool.as_str()),
+                InstallCliTool,
+            ));
+        }
+        items.push(MenuItem::separator());
+        items.push(MenuItem::action(strings.menu_about.clone(), ShowAbout));
+        items
+    };
+    #[cfg(not(target_os = "macos"))]
+    let help_items = vec![
+        MenuItem::action(strings.menu_check_updates.clone(), CheckForUpdates),
+        MenuItem::separator(),
+        MenuItem::action(strings.menu_about.clone(), ShowAbout),
+    ];
+
+    let mut menus = initial_menus;
+    menus.extend([
         Menu {
             name: strings.menu_export.into(),
             items: vec![
@@ -732,46 +833,12 @@ fn build_menus(
                 ToggleWorkspace,
             )],
         },
-        {
-            #[cfg(target_os = "macos")]
-            let help_items = {
-                // Show different menu item depending on whether CLI is already
-                // installed pointing to the current app.  Only portable
-                // installations (drag-installed .app bundles) need this —
-                // pkg-installed apps manage the symlink via postinstall.
-                let cli_installed = is_cli_symlink_current_app();
-                let mut items = vec![
-                    MenuItem::action(strings.menu_check_updates.clone(), CheckForUpdates),
-                    MenuItem::separator(),
-                ];
-                if cli_installed {
-                    items.push(MenuItem::action(
-                        SharedString::new(strings.menu_uninstall_cli_tool.as_str()),
-                        UninstallCliTool,
-                    ));
-                } else {
-                    items.push(MenuItem::action(
-                        SharedString::new(strings.menu_install_cli_tool.as_str()),
-                        InstallCliTool,
-                    ));
-                }
-                items.push(MenuItem::separator());
-                items.push(MenuItem::action(strings.menu_about.clone(), ShowAbout));
-                items
-            };
-            #[cfg(not(target_os = "macos"))]
-            let help_items = vec![
-                MenuItem::action(strings.menu_check_updates.clone(), CheckForUpdates),
-                MenuItem::separator(),
-                MenuItem::action(strings.menu_about.clone(), ShowAbout),
-            ];
-
-            Menu {
-                name: strings.menu_help.into(),
-                items: help_items,
-            }
+        Menu {
+            name: strings.menu_help.into(),
+            items: help_items,
         },
-    ]
+    ]);
+    menus
 }
 
 pub(crate) fn install_menus(cx: &mut App) {
@@ -1016,6 +1083,9 @@ pub(crate) fn init(cx: &mut App) {
     cx.on_action(|_: &QuitApplication, cx| {
         dispatch_menu_action(&QuitApplication, cx);
     });
+    cx.on_action(|_: &CloseWindow, cx| {
+        dispatch_menu_action(&CloseWindow, cx);
+    });
 
     install_menus(cx);
     cx.activate(true);
@@ -1025,9 +1095,9 @@ pub(crate) fn init(cx: &mut App) {
 mod tests {
     use super::{applescript_string_literal, build_menus};
     use crate::components::{
-        AddLanguageConfig, AddThemeConfig, CheckForUpdates, ExportHtml, ExportPdf, NewWindow,
-        NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile, QuitApplication, SaveDocument,
-        SelectLanguage, SelectTheme, ShowAbout,
+        AddLanguageConfig, AddThemeConfig, CheckForUpdates, CloseWindow, ExportHtml, ExportPdf,
+        NewWindow, NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile, QuitApplication,
+        SaveDocument, SelectLanguage, SelectTheme, ShowAbout,
     };
     use crate::i18n::I18nManager;
     use crate::theme::ThemeManager;
@@ -1062,6 +1132,33 @@ mod tests {
         );
     }
 
+    // On macOS the menu bar is: [Velotype app menu, File, Export, Language, Theme, Workspace, Help]
+    // On other platforms:       [File, Export, Language, Theme, Workspace, Help]
+    #[cfg(target_os = "macos")]
+    const EXPORT_IDX: usize = 2;
+    #[cfg(not(target_os = "macos"))]
+    const EXPORT_IDX: usize = 1;
+
+    #[cfg(target_os = "macos")]
+    const LANGUAGE_IDX: usize = 3;
+    #[cfg(not(target_os = "macos"))]
+    const LANGUAGE_IDX: usize = 2;
+
+    #[cfg(target_os = "macos")]
+    const THEME_IDX: usize = 4;
+    #[cfg(not(target_os = "macos"))]
+    const THEME_IDX: usize = 3;
+
+    #[cfg(target_os = "macos")]
+    const WORKSPACE_IDX: usize = 5;
+    #[cfg(not(target_os = "macos"))]
+    const WORKSPACE_IDX: usize = 4;
+
+    #[cfg(target_os = "macos")]
+    const HELP_IDX: usize = 6;
+    #[cfg(not(target_os = "macos"))]
+    const HELP_IDX: usize = 5;
+
     #[test]
     fn build_menus_uses_english_fallback_by_default() {
         let theme_manager = ThemeManager::default();
@@ -1072,21 +1169,68 @@ mod tests {
             .iter()
             .map(|menu| menu.name.to_string())
             .collect::<Vec<_>>();
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            menu_names,
+            vec![
+                "Velotype",
+                "File",
+                "Export",
+                "Language",
+                "Theme",
+                "Workspace",
+                "Help"
+            ]
+        );
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             menu_names,
             vec!["File", "Export", "Language", "Theme", "Workspace", "Help"]
         );
+
+        // New Window belongs with file operations on macOS and remains the
+        // first File menu item on other platforms.
+        #[cfg(target_os = "macos")]
+        assert_eq!(action_name(&menus[1].items[0]), "New Window");
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(action_name(&menus[0].items[0]), "New Window");
+
+        // Open Recent File submenu location differs by platform.
+        #[cfg(target_os = "macos")]
         assert_eq!(
-            submenu(&menus[0].items[2]).name.to_string(),
+            submenu(&menus[1].items[3]).name.to_string(),
             "Open Recent File"
         );
-        assert_eq!(action_name(&menus[0].items[3]), "Preferences");
-        assert_eq!(action_name(&menus[1].items[0]), "HTML");
-        assert_eq!(action_name(&menus[1].items[1]), "PDF");
-        assert_eq!(action_name(&menus[2].items[0]), "简体中文");
-        assert_eq!(action_name(&menus[2].items[1]), "\u{2713} English");
-        assert_eq!(action_name(&menus[4].items[0]), "Toggle Workspace");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            submenu(&menus[0].items[3]).name.to_string(),
+            "Open Recent File"
+        );
+
+        // Close Window is colocated with New Window in the File menu.
+        #[cfg(target_os = "macos")]
+        assert_eq!(action_name(&menus[1].items[1]), "Close Window");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(action_name(&menus[0].items[1]), "Close Window");
+
+        // Preferences location differs by platform.
+        #[cfg(target_os = "macos")]
+        assert_eq!(action_name(&menus[0].items[0]), "Preferences");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(action_name(&menus[0].items[4]), "Preferences");
+
+        assert_eq!(action_name(&menus[EXPORT_IDX].items[0]), "HTML");
+        assert_eq!(action_name(&menus[EXPORT_IDX].items[1]), "PDF");
+        assert_eq!(action_name(&menus[LANGUAGE_IDX].items[0]), "简体中文");
+        assert_eq!(
+            action_name(&menus[LANGUAGE_IDX].items[1]),
+            "\u{2713} English"
+        );
+        assert_eq!(
+            action_name(&menus[WORKSPACE_IDX].items[0]),
+            "Toggle Workspace"
+        );
     }
 
     #[test]
@@ -1095,8 +1239,14 @@ mod tests {
         let i18n_manager = I18nManager::new_with_language_id("zh-CN");
         let menus = build_menus(&theme_manager, &i18n_manager, &[]);
 
+        #[cfg(target_os = "macos")]
         assert_eq!(
-            submenu(&menus[0].items[2]).name.to_string(),
+            submenu(&menus[1].items[3]).name.to_string(),
+            i18n_manager.strings().menu_open_recent_file.as_str()
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            submenu(&menus[0].items[3]).name.to_string(),
             i18n_manager.strings().menu_open_recent_file.as_str()
         );
 
@@ -1104,16 +1254,30 @@ mod tests {
             .iter()
             .map(|menu| menu.name.to_string())
             .collect::<Vec<_>>();
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            menu_names,
+            vec!["Velotype", "文件", "导出", "语言", "主题", "工作区", "帮助"]
+        );
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             menu_names,
             vec!["文件", "导出", "语言", "主题", "工作区", "帮助"]
         );
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(action_name(&menus[1].items[0]), "新建窗口");
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(action_name(&menus[0].items[0]), "新建窗口");
-        assert_eq!(action_name(&menus[1].items[0]), "HTML");
-        assert_eq!(action_name(&menus[1].items[1]), "PDF");
-        assert_eq!(action_name(&menus[2].items[0]), "\u{2713} 简体中文");
-        assert_eq!(action_name(&menus[2].items[1]), "English");
-        assert_eq!(action_name(&menus[4].items[0]), "切换工作区");
+        assert_eq!(action_name(&menus[EXPORT_IDX].items[0]), "HTML");
+        assert_eq!(action_name(&menus[EXPORT_IDX].items[1]), "PDF");
+        assert_eq!(
+            action_name(&menus[LANGUAGE_IDX].items[0]),
+            "\u{2713} 简体中文"
+        );
+        assert_eq!(action_name(&menus[LANGUAGE_IDX].items[1]), "English");
+        assert_eq!(action_name(&menus[WORKSPACE_IDX].items[0]), "切换工作区");
     }
 
     #[test]
@@ -1122,14 +1286,14 @@ mod tests {
         let i18n_manager = I18nManager::default();
         let menus = build_menus(&theme_manager, &i18n_manager, &[]);
 
-        match &menus[1].items[0] {
+        match &menus[EXPORT_IDX].items[0] {
             MenuItem::Action { action, .. } => {
                 assert!(action.as_any().is::<ExportHtml>());
             }
             _ => panic!("expected export html action item"),
         }
 
-        match &menus[1].items[1] {
+        match &menus[EXPORT_IDX].items[1] {
             MenuItem::Action { action, .. } => {
                 assert!(action.as_any().is::<ExportPdf>());
             }
@@ -1143,7 +1307,7 @@ mod tests {
         let i18n_manager = I18nManager::default();
         let menus = build_menus(&theme_manager, &i18n_manager, &[]);
 
-        match &menus[2].items[0] {
+        match &menus[LANGUAGE_IDX].items[0] {
             MenuItem::Action { action, .. } => {
                 let action = action
                     .as_any()
@@ -1160,7 +1324,13 @@ mod tests {
         let theme_manager = ThemeManager::default();
         let i18n_manager = I18nManager::default();
         let menus = build_menus(&theme_manager, &i18n_manager, &[]);
-        let recent_menu = submenu(&menus[0].items[2]);
+
+        // On macOS: File menu is index 1, Open Recent is item 3 within it.
+        // On other platforms: File menu is index 0, Open Recent is item 3.
+        #[cfg(target_os = "macos")]
+        let recent_menu = submenu(&menus[1].items[3]);
+        #[cfg(not(target_os = "macos"))]
+        let recent_menu = submenu(&menus[0].items[3]);
 
         assert_eq!(recent_menu.name.to_string(), "Open Recent File");
         assert_eq!(recent_menu.items.len(), 1);
@@ -1182,7 +1352,11 @@ mod tests {
             PathBuf::from(r"D:\notes\two.markdown"),
         ];
         let menus = build_menus(&theme_manager, &i18n_manager, &recent_files);
-        let recent_menu = submenu(&menus[0].items[2]);
+
+        #[cfg(target_os = "macos")]
+        let recent_menu = submenu(&menus[1].items[3]);
+        #[cfg(not(target_os = "macos"))]
+        let recent_menu = submenu(&menus[0].items[3]);
 
         assert_eq!(recent_menu.items.len(), 2);
         assert_eq!(action_name(&recent_menu.items[0]), r"C:\docs\one.md");
@@ -1211,6 +1385,7 @@ mod tests {
         assert!(super::is_window_context_menu_action(&AddThemeConfig));
         assert!(super::is_window_context_menu_action(&SaveDocument));
         assert!(super::is_window_context_menu_action(&QuitApplication));
+        assert!(super::is_window_context_menu_action(&CloseWindow));
         assert!(!super::is_window_context_menu_action(&SelectTheme {
             theme_id: "velotype".into(),
         }));
@@ -1225,7 +1400,7 @@ mod tests {
         let i18n_manager = I18nManager::default();
         let menus = build_menus(&theme_manager, &i18n_manager, &[]);
 
-        let language_items = &menus[2].items;
+        let language_items = &menus[LANGUAGE_IDX].items;
         assert!(matches!(
             language_items[language_items.len() - 2],
             MenuItem::Separator
@@ -1241,7 +1416,7 @@ mod tests {
             _ => panic!("expected add language config action item"),
         }
 
-        let theme_items = &menus[3].items;
+        let theme_items = &menus[THEME_IDX].items;
         assert_eq!(action_name(&theme_items[0]), "\u{2713} Velotype");
         assert_eq!(action_name(&theme_items[1]), "Velotype Light");
         assert!(matches!(
@@ -1272,7 +1447,7 @@ mod tests {
         assert!(theme_manager.set_theme_by_id("velotype-light"));
         let i18n_manager = I18nManager::default();
         let menus = build_menus(&theme_manager, &i18n_manager, &[]);
-        let theme_items = &menus[3].items;
+        let theme_items = &menus[THEME_IDX].items;
 
         assert_eq!(action_name(&theme_items[0]), "Velotype");
         assert_eq!(action_name(&theme_items[1]), "\u{2713} Velotype Light");
@@ -1289,13 +1464,12 @@ mod tests {
     }
 
     #[test]
-    fn help_menu_contains_update_and_about_only() {
+    fn help_menu_first_item_is_check_for_updates() {
         let theme_manager = ThemeManager::default();
         let i18n_manager = I18nManager::default();
         let menus = build_menus(&theme_manager, &i18n_manager, &[]);
-        let help_items = &menus[5].items;
+        let help_items = &menus[HELP_IDX].items;
 
-        assert_eq!(help_items.len(), 3);
         match &help_items[0] {
             MenuItem::Action { action, .. } => {
                 assert!(action.as_any().is::<CheckForUpdates>());
@@ -1303,7 +1477,37 @@ mod tests {
             _ => panic!("expected check updates action item"),
         }
         assert!(matches!(help_items[1], MenuItem::Separator));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn help_menu_contains_update_and_about_only() {
+        let theme_manager = ThemeManager::default();
+        let i18n_manager = I18nManager::default();
+        let menus = build_menus(&theme_manager, &i18n_manager, &[]);
+        let help_items = &menus[HELP_IDX].items;
+
+        assert_eq!(help_items.len(), 3);
         match &help_items[2] {
+            MenuItem::Action { action, .. } => {
+                assert!(action.as_any().is::<ShowAbout>());
+            }
+            _ => panic!("expected about action item"),
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn help_menu_contains_cli_and_about_on_macos() {
+        let theme_manager = ThemeManager::default();
+        let i18n_manager = I18nManager::default();
+        let menus = build_menus(&theme_manager, &i18n_manager, &[]);
+        let help_items = &menus[HELP_IDX].items;
+
+        // CheckForUpdates, separator, Install/Uninstall CLI, separator, About
+        assert_eq!(help_items.len(), 5);
+        assert!(matches!(help_items[3], MenuItem::Separator));
+        match &help_items[4] {
             MenuItem::Action { action, .. } => {
                 assert!(action.as_any().is::<ShowAbout>());
             }
