@@ -6,6 +6,8 @@
 
 use gpui::*;
 
+const BLOCK_EDITOR_CONTEXT: &str = "BlockEditor";
+
 use super::element::{BlockTextElement, CodeLanguageInputElement};
 use super::{Block, BlockEvent, BlockKind, ImageResolvedSource, ImageRuntime};
 use crate::components::{
@@ -50,6 +52,16 @@ fn column_axis_gutter_visible(
             ..
         })
     )
+}
+
+/// Makes a row-axis highlight color more opaque (more solid, still translucent)
+/// for the header row, keeping the theme's hue so the header handle reads as a
+/// stronger version of the body-row handles in whatever colors the theme uses.
+fn header_axis_emphasis(color: Hsla) -> Hsla {
+    Hsla {
+        a: color.a + (1.0 - color.a) * 0.5,
+        ..color
+    }
 }
 
 fn fallback_image_label(alt: &str, strings: &I18nStrings) -> SharedString {
@@ -1474,7 +1486,7 @@ impl Block {
     ) -> Stateful<Div> {
         let base = div()
             .id(block_id)
-            .key_context("BlockEditor")
+            .key_context(BLOCK_EDITOR_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_newline))
             .on_action(cx.listener(Self::on_delete_back))
@@ -1582,8 +1594,12 @@ impl Render for Block {
                 .table_cell_position()
                 .map(|position| position.is_header())
                 .unwrap_or(false);
+            // The header row is only styled distinctly (shaded background, medium
+            // weight) when the show-table-headers preference is enabled.
+            let style_as_header =
+                is_header && crate::config::EditorSettings::show_table_headers(cx);
             let highlight = self.table_axis_highlight;
-            let base_bg = if is_header {
+            let base_bg = if style_as_header {
                 c.table_header_bg
             } else {
                 c.table_cell_bg
@@ -1629,7 +1645,7 @@ impl Render for Block {
                 .text_color(c.text_default)
                 .line_height(rems(t.text_line_height));
 
-            let cell_base = if is_header {
+            let cell_base = if style_as_header {
                 cell_base.font_weight(FontWeight::MEDIUM)
             } else {
                 cell_base
@@ -1652,7 +1668,7 @@ impl Render for Block {
                 && let Some(inline_images) = self.render_table_cell_inline_images(
                     &theme,
                     &strings,
-                    if is_header {
+                    if style_as_header {
                         FontWeight::MEDIUM
                     } else {
                         FontWeight::NORMAL
@@ -1671,7 +1687,7 @@ impl Render for Block {
                     None,
                     c.text_default,
                     t.text_size,
-                    if is_header {
+                    if style_as_header {
                         FontWeight::MEDIUM
                     } else {
                         FontWeight::NORMAL
@@ -2255,7 +2271,7 @@ impl Render for Block {
                                 .right(px(d.code_language_input_gap))
                                 .bottom(px(0.0))
                                 .occlude()
-                                .key_context("BlockEditor")
+                                .key_context(BLOCK_EDITOR_CONTEXT)
                                 .track_focus(&self.code_language_focus_handle)
                                 .on_action(cx.listener(Self::on_code_language_newline))
                                 .on_action(cx.listener(Self::on_code_language_dismiss))
@@ -2405,7 +2421,8 @@ impl Render for Block {
                                             let _ = hover_block.update(cx, |_block, cx| {
                                                 cx.emit(BlockEvent::RequestTableAxisPreview {
                                                     kind: TableAxisKind::Column,
-                                                    index: hovered.then_some(column),
+                                                    index: column,
+                                                    hovered: *hovered,
                                                 });
                                             });
                                         })
@@ -2440,8 +2457,74 @@ impl Render for Block {
                     )
                 });
 
-                let header_row = div().w_full().flex().gap(px(0.0)).children(
-                    header_cells.into_iter().enumerate().map(|(column, cell)| {
+                let header_hover_block = weak_table_block.clone();
+                let header_select_block = weak_table_block.clone();
+                let header_menu_block = weak_table_block.clone();
+                // The header is visual row 0; its handle uses a more opaque
+                // version of the body-row color to signal its distinct role.
+                let header_marker = crate::components::TableAxisMarker {
+                    kind: TableAxisKind::Row,
+                    index: 0,
+                };
+                let header_band_bg = if selected_marker == Some(header_marker) {
+                    header_axis_emphasis(c.table_axis_selected_bg)
+                } else if preview_marker == Some(header_marker) {
+                    header_axis_emphasis(c.table_axis_preview_bg)
+                } else {
+                    hsla(0.0, 0.0, 0.0, 0.0)
+                };
+                let header_row = div()
+                    .relative()
+                    .w_full()
+                    .flex()
+                    .gap(px(0.0))
+                    .child(
+                        // Left-edge band mirrors the body rows so the header row
+                        // can be hovered, selected, and right-clicked just like
+                        // them, with the Header Row toggle added to its menu.
+                        div()
+                            .id(ElementId::Name(
+                                format!("table-header-axis-band-{}", self.record.id).into(),
+                            ))
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(-activation_band)
+                            .w(activation_band)
+                            .rounded(px(6.0))
+                            .bg(header_band_bg)
+                            .cursor_pointer()
+                            .on_hover(move |hovered, _window, cx| {
+                                let _ = header_hover_block.update(cx, |_block, cx| {
+                                    cx.emit(BlockEvent::RequestTableAxisPreview {
+                                        kind: TableAxisKind::Row,
+                                        index: 0,
+                                        hovered: *hovered,
+                                    });
+                                });
+                            })
+                            .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                                let _ = header_select_block.update(cx, |_block, cx| {
+                                    cx.stop_propagation();
+                                    cx.emit(BlockEvent::RequestSelectTableAxis {
+                                        kind: TableAxisKind::Row,
+                                        index: 0,
+                                    });
+                                });
+                            })
+                            .on_mouse_down(MouseButton::Right, move |event, _window, cx| {
+                                let _ = header_menu_block.update(cx, |_block, cx| {
+                                    cx.stop_propagation();
+                                    cx.emit(BlockEvent::RequestOpenTableAxisMenu {
+                                        kind: TableAxisKind::Row,
+                                        index: 0,
+                                        position: event.position,
+                                    });
+                                });
+                            })
+                            .occlude(),
+                    )
+                    .children(header_cells.into_iter().enumerate().map(|(column, cell)| {
                         let hover_block = weak_table_block.clone();
                         let select_block = weak_table_block.clone();
                         let menu_block = weak_table_block.clone();
@@ -2471,7 +2554,8 @@ impl Render for Block {
                                         let _ = hover_block.update(cx, |_block, cx| {
                                             cx.emit(BlockEvent::RequestTableAxisPreview {
                                                 kind: TableAxisKind::Column,
-                                                index: hovered.then_some(column),
+                                                index: column,
+                                                hovered: *hovered,
                                             });
                                         });
                                     })
@@ -2497,8 +2581,7 @@ impl Render for Block {
                                     .occlude(),
                             )
                             .child(cell)
-                    }),
-                );
+                    }));
 
                 let body_rows =
                     runtime
@@ -2509,9 +2592,12 @@ impl Render for Block {
                             let hover_block = weak_table_block.clone();
                             let select_block = weak_table_block.clone();
                             let menu_block = weak_table_block.clone();
+                            // Row selections are addressed by visual index, where
+                            // the header is `0` and body rows follow at `1..`.
+                            let visual_row = body_row_index + 1;
                             let marker = crate::components::TableAxisMarker {
                                 kind: TableAxisKind::Row,
-                                index: body_row_index,
+                                index: visual_row,
                             };
                             let band_bg = if selected_marker == Some(marker) {
                                 c.table_axis_selected_bg
@@ -2546,7 +2632,8 @@ impl Render for Block {
                                             let _ = hover_block.update(cx, |_block, cx| {
                                                 cx.emit(BlockEvent::RequestTableAxisPreview {
                                                     kind: TableAxisKind::Row,
-                                                    index: hovered.then_some(body_row_index),
+                                                    index: visual_row,
+                                                    hovered: *hovered,
                                                 });
                                             });
                                         })
@@ -2557,7 +2644,7 @@ impl Render for Block {
                                                     cx.stop_propagation();
                                                     cx.emit(BlockEvent::RequestSelectTableAxis {
                                                         kind: TableAxisKind::Row,
-                                                        index: body_row_index,
+                                                        index: visual_row,
                                                     });
                                                 });
                                             },
@@ -2569,7 +2656,7 @@ impl Render for Block {
                                                     cx.stop_propagation();
                                                     cx.emit(BlockEvent::RequestOpenTableAxisMenu {
                                                         kind: TableAxisKind::Row,
-                                                        index: body_row_index,
+                                                        index: visual_row,
                                                         position: event.position,
                                                     });
                                                 });
