@@ -29,6 +29,10 @@ actions!(
         End,
         BlockUp,
         BlockDown,
+        PageUp,
+        PageDown,
+        JumpToTop,
+        JumpToBottom,
         SelectLeft,
         SelectRight,
         WordSelectLeft,
@@ -124,6 +128,10 @@ pub(crate) enum ShortcutCommand {
     End,
     BlockUp,
     BlockDown,
+    PageUp,
+    PageDown,
+    JumpToTop,
+    JumpToBottom,
     SelectLeft,
     SelectRight,
     WordSelectLeft,
@@ -163,6 +171,23 @@ pub(crate) struct ShortcutDefinition {
 }
 
 const BLOCK_CONTEXT: Option<&str> = Some("BlockEditor");
+const SELECT_ALL_ID: &str = "select_all";
+const LEGACY_SELECT_ALL_IDS: &[&str] = &[
+    "select_all_source_text",
+    "select_focused_block_text_rendered",
+];
+
+// On macOS cmd-q is the system quit shortcut; Windows/Linux use Alt+F4 (OS-handled).
+#[cfg(target_os = "macos")]
+const QUIT_APPLICATION_DEFAULT_KEYS: &[&str] = &["cmd-q"];
+#[cfg(not(target_os = "macos"))]
+const QUIT_APPLICATION_DEFAULT_KEYS: &[&str] = &[];
+
+// On macOS cmd-w closes the current window; no app-level binding needed on other platforms.
+#[cfg(target_os = "macos")]
+const CLOSE_WINDOW_DEFAULT_KEYS: &[&str] = &["cmd-w"];
+#[cfg(not(target_os = "macos"))]
+const CLOSE_WINDOW_DEFAULT_KEYS: &[&str] = &["ctrl-q"];
 
 // On macOS cmd-q is the system quit shortcut; Windows/Linux use Alt+F4 (OS-handled).
 #[cfg(target_os = "macos")]
@@ -282,6 +307,37 @@ const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
         default_keys: &["ctrl-down", "alt-down"],
         context: BLOCK_CONTEXT,
     },
+    // Page scroll and document jumps operate on the editor viewport rather than
+    // a single block, so they use global bindings (no context) and stay active
+    // in both Rendered and Source mode.
+    ShortcutDefinition {
+        command: ShortcutCommand::PageUp,
+        id: "page_up",
+        category: ShortcutCategory::Navigation,
+        default_keys: &["pageup"],
+        context: None,
+    },
+    ShortcutDefinition {
+        command: ShortcutCommand::PageDown,
+        id: "page_down",
+        category: ShortcutCategory::Navigation,
+        default_keys: &["pagedown"],
+        context: None,
+    },
+    ShortcutDefinition {
+        command: ShortcutCommand::JumpToTop,
+        id: "jump_to_top",
+        category: ShortcutCategory::Navigation,
+        default_keys: &["ctrl-home", "cmd-up"],
+        context: None,
+    },
+    ShortcutDefinition {
+        command: ShortcutCommand::JumpToBottom,
+        id: "jump_to_bottom",
+        category: ShortcutCategory::Navigation,
+        default_keys: &["ctrl-end", "cmd-down"],
+        context: None,
+    },
     ShortcutDefinition {
         command: ShortcutCommand::SelectLeft,
         id: "select_left",
@@ -326,7 +382,7 @@ const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     },
     ShortcutDefinition {
         command: ShortcutCommand::SelectAll,
-        id: "select_all",
+        id: SELECT_ALL_ID,
         category: ShortcutCategory::Edit,
         default_keys: &["cmd-a", "ctrl-a"],
         context: BLOCK_CONTEXT,
@@ -501,6 +557,35 @@ fn default_keys(definition: ShortcutDefinition) -> Vec<String> {
         .collect()
 }
 
+/// Legacy preference keys that should feed a modern shortcut definition.
+///
+/// Select-all used to be represented by separate source/rendered commands. The
+/// editor now cycles those behaviors through one action, so old preferences map
+/// forward to `select_all` instead of being silently discarded on load.
+fn legacy_shortcut_ids(definition: ShortcutDefinition) -> &'static [&'static str] {
+    match definition.command {
+        ShortcutCommand::SelectAll => LEGACY_SELECT_ALL_IDS,
+        _ => &[],
+    }
+}
+
+/// Reads a user shortcut override, preferring the current id before aliases.
+fn configured_shortcut_keys(
+    definition: ShortcutDefinition,
+    config: &BTreeMap<String, Vec<String>>,
+) -> Option<Vec<String>> {
+    config
+        .get(definition.id)
+        .and_then(|keys| normalize_shortcut_keys(keys))
+        .or_else(|| {
+            legacy_shortcut_ids(definition).iter().find_map(|id| {
+                config
+                    .get(*id)
+                    .and_then(|keys| normalize_shortcut_keys(keys))
+            })
+        })
+}
+
 fn shortcuts_conflict(
     left: ShortcutDefinition,
     left_keys: &[String],
@@ -515,9 +600,7 @@ pub(crate) fn normalize_shortcut_config(
 ) -> BTreeMap<String, Vec<String>> {
     let mut effective: BTreeMap<&'static str, (bool, Vec<String>)> = BTreeMap::new();
     for definition in SHORTCUT_DEFINITIONS {
-        let custom = config
-            .get(definition.id)
-            .and_then(|keys| normalize_shortcut_keys(keys));
+        let custom = configured_shortcut_keys(*definition, config);
         effective.insert(
             definition.id,
             match custom {
@@ -621,6 +704,10 @@ fn key_binding_for(
         ShortcutCommand::End => KeyBinding::new(key, End, context),
         ShortcutCommand::BlockUp => KeyBinding::new(key, BlockUp, context),
         ShortcutCommand::BlockDown => KeyBinding::new(key, BlockDown, context),
+        ShortcutCommand::PageUp => KeyBinding::new(key, PageUp, context),
+        ShortcutCommand::PageDown => KeyBinding::new(key, PageDown, context),
+        ShortcutCommand::JumpToTop => KeyBinding::new(key, JumpToTop, context),
+        ShortcutCommand::JumpToBottom => KeyBinding::new(key, JumpToBottom, context),
         ShortcutCommand::SelectLeft => KeyBinding::new(key, SelectLeft, context),
         ShortcutCommand::SelectRight => KeyBinding::new(key, SelectRight, context),
         ShortcutCommand::WordSelectLeft => KeyBinding::new(key, WordSelectLeft, context),
@@ -716,6 +803,74 @@ mod tests {
     }
 
     #[test]
+    fn select_all_has_default_shortcuts() {
+        assert_eq!(
+            resolved_shortcut_keys(&BTreeMap::new(), ShortcutCommand::SelectAll),
+            vec!["cmd-a".to_string(), "ctrl-a".to_string()]
+        );
+        assert!(
+            shortcut_conflict_for(
+                ShortcutCommand::SelectAll,
+                &["cmd-a".to_string(), "ctrl-a".to_string()],
+                &BTreeMap::new()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn select_all_shortcut_can_be_customized() {
+        let mut config = BTreeMap::new();
+        config.insert("select_all".to_string(), vec!["ctrl-shift-a".to_string()]);
+
+        assert_eq!(
+            resolved_shortcut_keys(&config, ShortcutCommand::SelectAll),
+            vec!["ctrl-shift-a".to_string()]
+        );
+    }
+
+    #[test]
+    fn legacy_split_select_all_shortcut_config_maps_to_unified_command() {
+        let mut config = BTreeMap::new();
+        config.insert(
+            "select_all_source_text".to_string(),
+            vec!["ctrl-shift-a".to_string()],
+        );
+
+        assert_eq!(
+            resolved_shortcut_keys(&config, ShortcutCommand::SelectAll),
+            vec!["ctrl-shift-a".to_string()]
+        );
+
+        let normalized = normalize_shortcut_config(&config);
+        assert_eq!(
+            normalized.get("select_all"),
+            Some(&vec!["ctrl-shift-a".to_string()])
+        );
+        assert!(!normalized.contains_key("select_all_source_text"));
+        assert!(!normalized.contains_key("select_focused_block_text_rendered"));
+
+        config.clear();
+        config.insert(
+            "select_focused_block_text_rendered".to_string(),
+            vec!["ctrl-alt-shift-a".to_string()],
+        );
+
+        assert_eq!(
+            resolved_shortcut_keys(&config, ShortcutCommand::SelectAll),
+            vec!["ctrl-alt-shift-a".to_string()]
+        );
+
+        let normalized = normalize_shortcut_config(&config);
+        assert_eq!(
+            normalized.get("select_all"),
+            Some(&vec!["ctrl-alt-shift-a".to_string()])
+        );
+        assert!(!normalized.contains_key("select_all_source_text"));
+        assert!(!normalized.contains_key("select_focused_block_text_rendered"));
+    }
+
+    #[test]
     fn close_and_quit_defaults_are_platform_specific() {
         #[cfg(target_os = "macos")]
         {
@@ -762,6 +917,26 @@ mod tests {
                 "ctrl-shift-right".to_string(),
                 "alt-shift-right".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn page_navigation_shortcuts_have_defaults() {
+        assert_eq!(
+            resolved_shortcut_keys(&BTreeMap::new(), ShortcutCommand::PageUp),
+            vec!["pageup".to_string()]
+        );
+        assert_eq!(
+            resolved_shortcut_keys(&BTreeMap::new(), ShortcutCommand::PageDown),
+            vec!["pagedown".to_string()]
+        );
+        assert_eq!(
+            resolved_shortcut_keys(&BTreeMap::new(), ShortcutCommand::JumpToTop),
+            vec!["ctrl-home".to_string(), "cmd-up".to_string()]
+        );
+        assert_eq!(
+            resolved_shortcut_keys(&BTreeMap::new(), ShortcutCommand::JumpToBottom),
+            vec!["ctrl-end".to_string(), "cmd-down".to_string()]
         );
     }
 
