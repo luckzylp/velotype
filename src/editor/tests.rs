@@ -2237,6 +2237,64 @@ async fn consecutive_text_edits_within_window_coalesce_into_one_undo(cx: &mut Te
 }
 
 #[gpui::test]
+async fn redo_restores_text_reverted_by_undo(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| Editor::from_markdown(cx, "alpha".to_string(), None));
+
+    editor.update(cx, |editor, cx| {
+        let block = editor.document.first_root().expect("root").clone();
+        editor.active_entity_id = Some(block.entity_id());
+        block.update(cx, |block, cx| {
+            block.prepare_undo_capture(crate::components::UndoCaptureKind::CoalescibleText, cx);
+            block.replace_text_in_visible_range(5..5, " beta", None, false, cx);
+        });
+    });
+
+    editor.update(cx, |editor, cx| {
+        editor.undo_document(cx);
+        assert_eq!(editor.document.markdown_text(cx), "alpha");
+        assert_eq!(editor.redo_history.len(), 1);
+
+        editor.redo_document(cx);
+        assert_eq!(editor.document.markdown_text(cx), "alpha beta");
+        assert!(editor.redo_history.is_empty());
+    });
+}
+
+#[gpui::test]
+async fn fresh_edit_clears_pending_redo_history(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| Editor::from_markdown(cx, "alpha".to_string(), None));
+
+    editor.update(cx, |editor, cx| {
+        let block = editor.document.first_root().expect("root").clone();
+        editor.active_entity_id = Some(block.entity_id());
+        block.update(cx, |block, cx| {
+            block.prepare_undo_capture(crate::components::UndoCaptureKind::CoalescibleText, cx);
+            block.replace_text_in_visible_range(5..5, " beta", None, false, cx);
+        });
+    });
+
+    editor.update(cx, |editor, cx| {
+        editor.undo_document(cx);
+        assert_eq!(editor.redo_history.len(), 1);
+
+        // A new edit invalidates the redo stack so it cannot revive stale text.
+        let block = editor.document.first_root().expect("root").clone();
+        block.update(cx, |block, cx| {
+            block.prepare_undo_capture(crate::components::UndoCaptureKind::CoalescibleText, cx);
+            block.replace_text_in_visible_range(5..5, " gamma", None, false, cx);
+        });
+    });
+
+    editor.update(cx, |editor, cx| {
+        editor.finalize_pending_undo_capture(cx);
+        assert!(editor.redo_history.is_empty());
+
+        editor.redo_document(cx);
+        assert_eq!(editor.document.markdown_text(cx), "alpha gamma");
+    });
+}
+
+#[gpui::test]
 async fn toggle_view_mode_preserves_paragraph_caret_position(cx: &mut TestAppContext) {
     let editor = cx.new(|cx| Editor::from_markdown(cx, "alpha\n\nbeta".to_string(), None));
 

@@ -1928,6 +1928,7 @@ impl Render for Editor {
             .can_drop(|dragged, _window, _cx| dragged.is::<ExternalPaths>())
             .on_drop::<ExternalPaths>(cx.listener(Self::on_external_paths_drop))
             .on_action(cx.listener(Self::on_undo))
+            .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_save_document))
             .on_action(cx.listener(Self::on_save_document_as))
             .on_action(cx.listener(Self::on_export_html))
