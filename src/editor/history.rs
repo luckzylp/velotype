@@ -114,6 +114,9 @@ impl Editor {
             return;
         }
 
+        // A fresh edit invalidates any forward history available for redo.
+        self.redo_history.clear();
+
         let should_merge = matches!(pending.snapshot.kind, UndoCaptureKind::CoalescibleText)
             && self.undo_history.last().is_some_and(|entry| {
                 matches!(entry.kind, UndoCaptureKind::CoalescibleText)
@@ -318,11 +321,33 @@ impl Editor {
             return;
         };
 
+        // Snapshot the current document so redo can step forward to it.
+        let current = self.capture_history_entry(UndoCaptureKind::NonCoalescible, cx);
         self.pending_undo_capture = None;
         self.history_restore_in_progress = true;
         self.clear_cross_block_selection(cx);
         self.restore_history_entry(&entry, cx);
         self.history_restore_in_progress = false;
+        self.redo_history.push(current);
+        self.mark_dirty(cx);
+        self.sync_table_axis_visuals(cx);
+        self.dismiss_contextual_overlays(cx);
+        cx.notify();
+    }
+
+    pub(super) fn redo_document(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.redo_history.pop() else {
+            return;
+        };
+
+        // Snapshot the current document so undo can step back to it again.
+        let current = self.capture_history_entry(UndoCaptureKind::NonCoalescible, cx);
+        self.pending_undo_capture = None;
+        self.history_restore_in_progress = true;
+        self.clear_cross_block_selection(cx);
+        self.restore_history_entry(&entry, cx);
+        self.history_restore_in_progress = false;
+        self.undo_history.push(current);
         self.mark_dirty(cx);
         self.sync_table_axis_visuals(cx);
         self.dismiss_contextual_overlays(cx);
