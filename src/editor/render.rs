@@ -838,7 +838,7 @@ impl Editor {
                             .w(px(geometry.width))
                             .h(px(geometry.height))
                             .bg(hsla(0.0, 0.0, 0.0, 0.0))
-                            .on_hover(cx.listener(Self::on_menu_submenu_panel_hover))
+                            .on_hover(cx.listener(Self::on_menu_submenu_bridge_hover))
                             .into_any_element(),
                     )
                 }

@@ -108,6 +108,11 @@ pub struct Editor {
     menu_bar_hovered: bool,
     menu_panel_hovered: bool,
     menu_submenu_panel_hovered: bool,
+    /// Hover state for the invisible bridge spanning the gap between the menu
+    /// panel and an open submenu. Tracked separately from
+    /// `menu_submenu_panel_hovered` so the handoff between the two regions
+    /// cannot clobber a single shared flag and tear the menu down.
+    menu_submenu_bridge_hovered: bool,
     menu_close_task: Option<Task<()>>,
     view_mode_toggle_hovered: bool,
     scrollbar_hovered: bool,
@@ -298,6 +303,7 @@ impl Editor {
             menu_bar_hovered: false,
             menu_panel_hovered: false,
             menu_submenu_panel_hovered: false,
+            menu_submenu_bridge_hovered: false,
             menu_close_task: None,
             view_mode_toggle_hovered: false,
             scrollbar_hovered: false,
