@@ -35,6 +35,7 @@ mod render;
 mod runtime_context;
 mod selection;
 mod source_mapping;
+mod status_bar;
 mod table_edit;
 #[cfg(test)]
 mod tests;
@@ -43,6 +44,7 @@ mod update;
 mod window_state;
 mod workspace;
 
+use self::status_bar::StatusBarState;
 use self::workspace::WorkspaceState;
 
 /// Link navigation request deferred until a `Window` is available.
@@ -93,6 +95,7 @@ pub struct Editor {
     /// True while an online update check is running in the background.
     update_check_in_progress: bool,
     workspace: WorkspaceState,
+    status_bar: StatusBarState,
     context_menu: Option<ContextMenuState>,
     table_insert_dialog: Option<TableInsertDialogState>,
     context_menu_submenu_close_task: Option<Task<()>>,
@@ -114,7 +117,6 @@ pub struct Editor {
     /// cannot clobber a single shared flag and tear the menu down.
     menu_submenu_bridge_hovered: bool,
     menu_close_task: Option<Task<()>>,
-    view_mode_toggle_hovered: bool,
     scrollbar_hovered: bool,
     scrollbar_visible_until: Instant,
     scrollbar_fade_task: Option<Task<()>>,
@@ -290,6 +292,7 @@ impl Editor {
             info_dialog: None,
             update_check_in_progress: false,
             workspace: WorkspaceState::default(),
+            status_bar: StatusBarState::default(),
             context_menu: None,
             table_insert_dialog: None,
             context_menu_submenu_close_task: None,
@@ -305,7 +308,6 @@ impl Editor {
             menu_submenu_panel_hovered: false,
             menu_submenu_bridge_hovered: false,
             menu_close_task: None,
-            view_mode_toggle_hovered: false,
             scrollbar_hovered: false,
             scrollbar_visible_until: Instant::now(),
             scrollbar_fade_task: None,
