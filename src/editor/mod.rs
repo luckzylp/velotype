@@ -120,6 +120,10 @@ pub struct Editor {
     scrollbar_hovered: bool,
     scrollbar_visible_until: Instant,
     scrollbar_fade_task: Option<Task<()>>,
+    /// Forces a repaint shortly after a pending scroll-into-view that could
+    /// not be satisfied yet (the target block has no measured bounds), so the
+    /// scroll lands on the next frame instead of waiting for the cursor blink.
+    scroll_recheck_task: Option<Task<()>>,
     scrollbar_drag: Option<ScrollbarDragSession>,
     undo_history: Vec<HistoryEntry>,
     redo_history: Vec<HistoryEntry>,
@@ -311,6 +315,7 @@ impl Editor {
             scrollbar_hovered: false,
             scrollbar_visible_until: Instant::now(),
             scrollbar_fade_task: None,
+            scroll_recheck_task: None,
             scrollbar_drag: None,
             undo_history: Vec::new(),
             redo_history: Vec::new(),

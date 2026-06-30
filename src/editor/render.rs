@@ -2,7 +2,7 @@
 //! unsaved-changes overlay dialog, custom scrollbar, and deferred
 //! operations (focus, scroll, save, window title).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::*;
 
@@ -508,16 +508,30 @@ impl Editor {
         let has_bounds = self.ensure_focused_caret_visible(window, cx);
         if self.pending_scroll_recheck_after_layout {
             self.pending_scroll_recheck_after_layout = false;
-            cx.notify();
+            self.schedule_scroll_recheck(cx);
             return;
         }
 
         if !has_bounds {
-            cx.notify();
+            self.schedule_scroll_recheck(cx);
             return;
         }
 
         self.pending_scroll_active_block_into_view = false;
+        self.scroll_recheck_task = None;
+    }
+
+    /// Requests a repaint one frame out so a still-pending scroll-into-view can
+    /// retry once the target block has been laid out. `cx.notify()` is swallowed
+    /// when called from within `render`, so without this the retry would wait
+    /// for the next external notify (e.g. the cursor blink, ~0.5s later).
+    fn schedule_scroll_recheck(&mut self, cx: &mut Context<Self>) {
+        self.scroll_recheck_task = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(16))
+                .await;
+            let _ = this.update(cx, |_this, cx| cx.notify());
+        }));
     }
 
     fn sync_pending_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1539,6 +1553,9 @@ impl Render for Editor {
         let scroll_trigger_padding = (d.block_min_height * 0.75).max(16.0);
         let max_scroll_y = f32::from(self.scroll_handle.max_offset().height.max(px(0.0)));
         let viewport_height = f32::from(viewport_bounds.size.height.max(px(1.0)));
+        // Extra room below the last block so the lowest line can be scrolled up
+        // to the viewport center instead of being pinned to the bottom edge.
+        let scroll_beyond_bottom = viewport_height * 0.5;
         let viewport_width = f32::from(viewport_bounds.size.width.max(px(1.0)));
         let has_overflow = max_scroll_y > 0.5;
 
@@ -1770,7 +1787,9 @@ impl Render for Editor {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_editor_mouse_up))
             .on_scroll_wheel(cx.listener(Self::on_editor_scroll_wheel))
             .p(px(d.editor_padding))
-            .pb(px(d.editor_padding + scroll_trigger_padding))
+            .pb(px(d.editor_padding
+                + scroll_trigger_padding
+                + scroll_beyond_bottom))
             .children(block_rows);
         let scroll_content = if self.view_mode == super::ViewMode::Rendered {
             scroll_content.on_mouse_down(
