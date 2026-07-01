@@ -35,6 +35,7 @@ mod render;
 mod runtime_context;
 mod selection;
 mod source_mapping;
+mod status_bar;
 mod table_edit;
 #[cfg(test)]
 mod tests;
@@ -43,6 +44,7 @@ mod update;
 mod window_state;
 mod workspace;
 
+use self::status_bar::StatusBarState;
 use self::workspace::WorkspaceState;
 
 /// Link navigation request deferred until a `Window` is available.
@@ -93,6 +95,7 @@ pub struct Editor {
     /// True while an online update check is running in the background.
     update_check_in_progress: bool,
     workspace: WorkspaceState,
+    status_bar: StatusBarState,
     context_menu: Option<ContextMenuState>,
     table_insert_dialog: Option<TableInsertDialogState>,
     context_menu_submenu_close_task: Option<Task<()>>,
@@ -108,11 +111,19 @@ pub struct Editor {
     menu_bar_hovered: bool,
     menu_panel_hovered: bool,
     menu_submenu_panel_hovered: bool,
+    /// Hover state for the invisible bridge spanning the gap between the menu
+    /// panel and an open submenu. Tracked separately from
+    /// `menu_submenu_panel_hovered` so the handoff between the two regions
+    /// cannot clobber a single shared flag and tear the menu down.
+    menu_submenu_bridge_hovered: bool,
     menu_close_task: Option<Task<()>>,
-    view_mode_toggle_hovered: bool,
     scrollbar_hovered: bool,
     scrollbar_visible_until: Instant,
     scrollbar_fade_task: Option<Task<()>>,
+    /// Forces a repaint shortly after a pending scroll-into-view that could
+    /// not be satisfied yet (the target block has no measured bounds), so the
+    /// scroll lands on the next frame instead of waiting for the cursor blink.
+    scroll_recheck_task: Option<Task<()>>,
     scrollbar_drag: Option<ScrollbarDragSession>,
     undo_history: Vec<HistoryEntry>,
     redo_history: Vec<HistoryEntry>,
@@ -285,6 +296,7 @@ impl Editor {
             info_dialog: None,
             update_check_in_progress: false,
             workspace: WorkspaceState::default(),
+            status_bar: StatusBarState::default(),
             context_menu: None,
             table_insert_dialog: None,
             context_menu_submenu_close_task: None,
@@ -298,11 +310,12 @@ impl Editor {
             menu_bar_hovered: false,
             menu_panel_hovered: false,
             menu_submenu_panel_hovered: false,
+            menu_submenu_bridge_hovered: false,
             menu_close_task: None,
-            view_mode_toggle_hovered: false,
             scrollbar_hovered: false,
             scrollbar_visible_until: Instant::now(),
             scrollbar_fade_task: None,
+            scroll_recheck_task: None,
             scrollbar_drag: None,
             undo_history: Vec::new(),
             redo_history: Vec::new(),

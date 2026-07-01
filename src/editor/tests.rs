@@ -819,6 +819,43 @@ async fn submenu_panel_hover_keeps_in_window_menu_open(cx: &mut TestAppContext) 
     });
 }
 
+// The gap bridge and the submenu panel overlap, so moving the cursor from the
+// bridge onto the submenu emits `bridge: false` and `panel: true` in the same
+// gesture. With both regions sharing one hover flag the stale `bridge: false`
+// could win and tear the menu down, which made reaching the recent-files list
+// fail intermittently. Track the two regions independently so the handoff
+// always keeps the menu open, regardless of event order.
+#[gpui::test]
+async fn submenu_survives_bridge_to_panel_hover_handoff(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| Editor::from_markdown(cx, "alpha".to_string(), None));
+
+    editor.update(cx, |editor, cx| {
+        editor.open_menu_bar(0, cx);
+        editor.open_menu_submenu(3, cx);
+
+        // Crossing the gap: only the bridge is hovered.
+        editor.set_menu_panel_hovered(false, cx);
+        editor.set_menu_bar_hovered(false, cx);
+        editor.set_menu_submenu_bridge_hovered(true, cx);
+        assert!(editor.menu_close_task.is_none());
+
+        // Handoff into the submenu panel. The bridge reporting `false` after
+        // the panel is already hovered must not schedule a close.
+        editor.set_menu_submenu_panel_hovered(true, cx);
+        editor.set_menu_submenu_bridge_hovered(false, cx);
+
+        assert_eq!(editor.menu_bar_open, Some(0));
+        assert_eq!(editor.menu_submenu_open, Some(3));
+        assert!(editor.menu_submenu_panel_hovered);
+        assert!(
+            editor.menu_close_task.is_none(),
+            "menu must stay open across the bridge-to-panel handoff"
+        );
+
+        editor.close_menu_bar(cx);
+    });
+}
+
 #[gpui::test]
 async fn starting_and_ending_scrollbar_drag_updates_editor_state(cx: &mut TestAppContext) {
     let editor = cx.new(|cx| Editor::from_markdown(cx, "alpha".to_string(), None));

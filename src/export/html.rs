@@ -678,11 +678,16 @@ fn theme_css(theme: &Theme) -> String {
     let c = &theme.colors;
     let d = &theme.dimensions;
     let t = &theme.typography;
+    let color_scheme = if c.editor_background.l >= 0.5 {
+        "light"
+    } else {
+        "dark"
+    };
     let pre_overflow = "overflow: auto;";
     let media_overflow = "overflow-x: auto;";
     format!(
         r#":root {{
-  color-scheme: dark;
+  color-scheme: {};
   --vlt-bg: {};
   --vlt-text: {};
   --vlt-muted: {};
@@ -840,6 +845,7 @@ hr {{ border: 0; border-top: 1px solid; border-color: var(--vlt-border); }}
   font-size: 0.92em;
 }}
 "#,
+        color_scheme,
         css_color(c.editor_background),
         css_color(c.text_default),
         css_color(c.dialog_muted),
@@ -909,6 +915,9 @@ fn chromium_pdf_theme_css(theme: &Theme) -> String {
   html,
   body {
     background-color: var(--vlt-bg);
+    border: 0;
+    outline: 0;
+    box-shadow: none;
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
   }
@@ -918,6 +927,9 @@ fn chromium_pdf_theme_css(theme: &Theme) -> String {
     max-width: none;
     margin: 0;
     padding: 0;
+    border: 0;
+    outline: 0;
+    box-shadow: none;
   }
 
   pre,
@@ -1004,7 +1016,10 @@ fn escape_html(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_tibetan_text, render_html, render_html_with_base_dir};
+    use super::{
+        contains_tibetan_text, render_chromium_pdf_html_with_base_dir, render_html,
+        render_html_with_base_dir,
+    };
     use crate::theme::Theme;
     use std::fs;
     use uuid::Uuid;
@@ -1048,6 +1063,7 @@ mod tests {
         let html = render_html("# Title\n\ntext", &Theme::default_theme(), "Doc");
 
         assert!(!html.contains("hsla("));
+        assert!(html.contains("color-scheme: dark;"));
         assert!(html.contains("--vlt-bg: rgba(25,25,25,1.000);"));
         assert!(html.contains("html { background-color: var(--vlt-bg); color: var(--vlt-text); }"));
         assert!(html.contains("background-color: var(--vlt-code-bg);"));
@@ -1057,6 +1073,32 @@ mod tests {
         ));
         assert!(!html.contains("background: var("));
         assert!(!html.contains("border-left-color:"));
+    }
+
+    #[test]
+    fn light_theme_exports_light_color_scheme() {
+        let html = render_html("# Title\n\ntext", &Theme::light_theme(), "Doc");
+
+        assert!(html.contains("color-scheme: light;"));
+        assert!(html.contains("--vlt-bg: rgba(247,248,251,1.000);"));
+        assert!(!html.contains("color-scheme: dark;"));
+    }
+
+    #[test]
+    fn chromium_pdf_light_theme_clears_print_container_frames() {
+        let html = render_chromium_pdf_html_with_base_dir(
+            "# Title\n\ntext",
+            &Theme::light_theme(),
+            "Doc",
+            None,
+        );
+
+        assert!(html.contains("color-scheme: light;"));
+        assert!(html.contains("background-color: var(--vlt-bg);"));
+        assert!(html.contains("border: 0;"));
+        assert!(html.contains("outline: 0;"));
+        assert!(html.contains("box-shadow: none;"));
+        assert!(!html.contains("color-scheme: dark;"));
     }
 
     #[test]

@@ -972,6 +972,15 @@ impl Editor {
         self.set_menu_submenu_panel_hovered(*hovered, cx);
     }
 
+    pub(crate) fn on_menu_submenu_bridge_hover(
+        &mut self,
+        hovered: &bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_menu_submenu_bridge_hovered(*hovered, cx);
+    }
+
     pub(crate) fn on_editor_mouse_down(
         &mut self,
         _event: &MouseDownEvent,
@@ -981,15 +990,6 @@ impl Editor {
         self.dismiss_menu_bar_from_body(cx);
         self.clear_table_axis_preview(cx);
         self.clear_table_axis_selection(cx);
-    }
-
-    pub(crate) fn on_view_mode_toggle_hover(
-        &mut self,
-        hovered: &bool,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.set_view_mode_toggle_hovered(*hovered, cx);
     }
 
     pub(crate) fn on_editor_scroll_wheel(
