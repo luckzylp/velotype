@@ -80,6 +80,17 @@ pub struct Editor {
     file_path: Option<PathBuf>,
     scroll_handle: ScrollHandle,
     last_scroll_viewport_size: Option<Size<Pixels>>,
+    /// Last frame's visible block ids, to detect structural edits so the height
+    /// cache is refreshed only when the row/block mapping is unchanged.
+    prev_visible_block_ids: Vec<EntityId>,
+    /// Per-row footprint (height plus trailing gap), keyed by the row's first
+    /// block. Scroll-invariant, unlike raw painted positions, so windowing from
+    /// their running sum stays correct as the document scrolls. Filled as rows
+    /// paint; unknown rows use a minimum-height estimate.
+    row_stride_cache: HashMap<EntityId, f32>,
+    /// Row range mounted last frame; only those rows shared one scroll offset, so
+    /// their adjacent-top differences are valid footprints for the cache.
+    prev_render_window: Option<(usize, usize)>,
     close_guard_installed: bool,
     show_unsaved_changes_dialog: bool,
     /// When true, the window will close after the next successful save.
@@ -159,6 +170,16 @@ struct ScrollbarGeometry {
     thumb_height: f32,
     thumb_top: f32,
     max_scroll_y: f32,
+}
+
+/// Windowing result: the run of rows to mount, plus the top/bottom spacer
+/// heights standing in for the culled rows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RenderWindow {
+    run_start: usize,
+    run_end: usize,
+    top_h: f32,
+    bottom_h: f32,
 }
 
 /// Active drag session for the custom scrollbar thumb.
@@ -285,6 +306,9 @@ impl Editor {
             file_path,
             scroll_handle: ScrollHandle::new(),
             last_scroll_viewport_size: None,
+            prev_visible_block_ids: Vec::new(),
+            row_stride_cache: HashMap::new(),
+            prev_render_window: None,
             close_guard_installed: false,
             show_unsaved_changes_dialog: false,
             pending_close_after_save: false,

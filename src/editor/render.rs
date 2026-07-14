@@ -9,12 +9,16 @@ use gpui::*;
 use super::{Editor, InfoDialogKind, workspace::workspace_panel_width_for_viewport};
 use crate::app_menu::dispatch_menu_action_for_editor;
 use crate::components::CalloutVariant;
-use crate::components::{AddLanguageConfig, AddThemeConfig, Block, BlockKind, NoRecentFiles};
+use crate::components::{AddLanguageConfig, AddThemeConfig, Block, NoRecentFiles};
 use crate::i18n::{I18nManager, I18nStrings};
 use crate::theme::{Theme, ThemeDimensions, ThemeManager};
 use crate::window_chrome::{custom_titlebar_height, render_custom_titlebar};
 
 pub(crate) const ABOUT_GITHUB_URL: &str = "https://github.com/manyougz/velotype";
+
+/// Rows within this many pixels of the viewport stay mounted, so a fast flick
+/// paints them before they scroll in instead of showing a blank edge.
+const RENDER_OVERDRAW_PX: f32 = 800.0;
 
 pub(crate) fn open_about_github_url(cx: &mut App) {
     cx.open_url(ABOUT_GITHUB_URL);
@@ -460,34 +464,6 @@ impl Editor {
         true
     }
 
-    fn should_use_item_scroll(&self, window: &Window, cx: &App) -> bool {
-        if self.view_mode == super::ViewMode::Source {
-            return false;
-        }
-
-        let Some(focused_id) = self.focused_edit_target_entity_id(window, cx) else {
-            return true;
-        };
-        if self.table_cell_binding(focused_id).is_some() {
-            return false;
-        }
-        let Some(focused_block) = self.document.block_entity_by_id(focused_id) else {
-            return true;
-        };
-        if focused_block.read_with(cx, |block, _cx| {
-            matches!(block.kind(), BlockKind::MathBlock | BlockKind::MermaidBlock)
-        }) {
-            return false;
-        }
-
-        let Some(block_bounds) = focused_block.read_with(cx, |block, _cx| block.last_bounds) else {
-            return true;
-        };
-
-        let viewport = self.scroll_handle.bounds();
-        block_bounds.size.height <= viewport.size.height
-    }
-
     fn apply_pending_scroll_into_view(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.scrollbar_drag.is_some() {
             return;
@@ -497,14 +473,8 @@ impl Editor {
             return;
         }
 
-        let use_item_scroll = self.should_use_item_scroll(window, cx);
-        if use_item_scroll
-            && let Some(focused_id) = self.focused_edit_target_entity_id(window, cx)
-            && let Some(focused_idx) = self.document.visible_index_for_entity_id(focused_id)
-        {
-            self.scroll_handle.scroll_to_item(focused_idx);
-        }
-
+        // scroll_to_item indexed children by position, which the spacers break;
+        // the focused block is always mounted, so pixel math on its bounds works.
         let has_bounds = self.ensure_focused_caret_visible(window, cx);
         if self.pending_scroll_recheck_after_layout {
             self.pending_scroll_recheck_after_layout = false;
@@ -1582,7 +1552,12 @@ impl Render for Editor {
                 .read_with(cx, |block, _cx| RenderedRowSpacingInfo::from_block(block))
         };
         let mut previous_row_spacing = None;
-        let mut block_rows = Vec::new();
+        // One entry per render row; off-screen rows are dropped after windowing.
+        let mut row_elements: Vec<AnyElement> = Vec::new();
+        let mut row_starts: Vec<usize> = Vec::new();
+        // Each row's leading `mt` gap; the top spacer subtracts the first mounted
+        // row's, since that row re-applies it.
+        let mut row_top_gaps: Vec<f32> = Vec::new();
         let mut index = 0usize;
         while index < visible_blocks.len() {
             let first_visible = visible_blocks[index].clone();
@@ -1677,7 +1652,9 @@ impl Render for Editor {
                 }
 
                 let (accent, background) = callout_colors(callout_variant, &theme);
-                block_rows.push(
+                row_starts.push(index);
+                row_top_gaps.push(top_gap);
+                row_elements.push(
                     div()
                         .w(px(centered_width))
                         .max_w(relative(1.0))
@@ -1731,7 +1708,9 @@ impl Render for Editor {
                     group_end += 1;
                 }
 
-                block_rows.push(
+                row_starts.push(index);
+                row_top_gaps.push(top_gap);
+                row_elements.push(
                     div()
                         .w(px(centered_width))
                         .max_w(relative(1.0))
@@ -1763,9 +1742,131 @@ impl Render for Editor {
             } else {
                 row
             };
-            block_rows.push(row.into_any_element());
+            row_starts.push(index);
+            row_top_gaps.push(top_gap);
+            row_elements.push(row.into_any_element());
             previous_row_spacing = Some(first_spacing);
             index += 1;
+        }
+
+        // The focused row is always kept mounted so its caret is not blurred; a
+        // table cell maps to its containing table block's row.
+        let focus_row = self
+            .focused_edit_target_entity_id(window, cx)
+            .and_then(|id| {
+                self.document.visible_index_for_entity_id(id).or_else(|| {
+                    self.table_cell_binding(id).and_then(|binding| {
+                        self.document
+                            .visible_index_for_entity_id(binding.table_block.entity_id())
+                    })
+                })
+            })
+            .map(|visible_index| {
+                row_starts
+                    .partition_point(|&start| start <= visible_index)
+                    .saturating_sub(1)
+            });
+
+        // A row's first block keys its cached height; its painted top (from last
+        // frame) feeds the footprints below.
+        let row_first_ids: Vec<EntityId> = row_starts
+            .iter()
+            .map(|&start| visible_blocks[start].entity.entity_id())
+            .collect();
+        let row_tops: Vec<Option<f32>> = row_starts
+            .iter()
+            .map(|&start| {
+                visible_blocks[start]
+                    .entity
+                    .read_with(cx, |block, _cx| block.last_bounds)
+                    .map(|bounds| f32::from(bounds.top()))
+            })
+            .collect();
+
+        // On a structural edit the row indices no longer match last frame, so the
+        // cache refresh below is skipped; its block-keyed entries still hold.
+        let structural_change = visible_blocks.len() != self.prev_visible_block_ids.len()
+            || visible_blocks
+                .iter()
+                .zip(&self.prev_visible_block_ids)
+                .any(|(visible, prev)| visible.entity.entity_id() != *prev);
+        if structural_change {
+            self.prev_visible_block_ids = visible_blocks
+                .iter()
+                .map(|v| v.entity.entity_id())
+                .collect();
+        }
+
+        // Rows mounted together last frame shared one scroll offset, so their
+        // adjacent painted-top differences are scroll-free heights. Caching those,
+        // not raw positions, is what keeps the window stable while scrolling.
+        if !structural_change {
+            if let Some((prev_start, prev_end)) = self.prev_render_window {
+                let prev_end = prev_end.min(row_first_ids.len());
+                for row in prev_start..prev_end.saturating_sub(1) {
+                    if let (Some(top), Some(next_top)) = (row_tops[row], row_tops[row + 1]) {
+                        let stride = next_top - top;
+                        if stride > 0.0 && stride.is_finite() {
+                            self.row_stride_cache.insert(row_first_ids[row], stride);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Unmeasured rows use the minimum block height: a lower bound, so the
+        // window over-mounts rather than ever landing on a spacer.
+        let estimate = d.block_min_height.max(1.0);
+        let strides: Vec<f32> = row_first_ids
+            .iter()
+            .map(|id| self.row_stride_cache.get(id).copied().unwrap_or(estimate))
+            .collect();
+
+        // Bound the cache against block churn, only when it outgrows the live rows.
+        if self.row_stride_cache.len() > row_first_ids.len().saturating_mul(2) {
+            let live: std::collections::HashSet<EntityId> = row_first_ids.iter().copied().collect();
+            self.row_stride_cache.retain(|id, _| live.contains(id));
+        }
+
+        let render_window = Self::rendered_window(
+            &strides,
+            current_scroll_y,
+            viewport_height,
+            RENDER_OVERDRAW_PX,
+            focus_row,
+        );
+        self.prev_render_window = Some((render_window.run_start, render_window.run_end));
+
+        // The first mounted row re-applies its `mt`, so drop it from the top
+        // spacer to avoid shifting content down by a gap.
+        let top_h = match row_top_gaps.get(render_window.run_start) {
+            Some(gap) => (render_window.top_h - gap).max(0.0),
+            None => render_window.top_h,
+        };
+        let mut block_rows: Vec<AnyElement> =
+            Vec::with_capacity(render_window.run_end - render_window.run_start + 2);
+        if top_h > 0.5 {
+            block_rows.push(
+                div()
+                    .w_full()
+                    .flex_shrink_0()
+                    .h(px(top_h))
+                    .into_any_element(),
+            );
+        }
+        for (row_index, element) in row_elements.into_iter().enumerate() {
+            if row_index >= render_window.run_start && row_index < render_window.run_end {
+                block_rows.push(element);
+            }
+        }
+        if render_window.bottom_h > 0.5 {
+            block_rows.push(
+                div()
+                    .w_full()
+                    .flex_shrink_0()
+                    .h(px(render_window.bottom_h))
+                    .into_any_element(),
+            );
         }
 
         let scroll_content = div()
