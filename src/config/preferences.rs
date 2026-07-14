@@ -1078,9 +1078,17 @@ impl PreferencesWindow {
                 cx,
             ));
         if self.theme_dropdown_open {
+            let mut list = div()
+                .id("preferences-theme-dropdown-list")
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .max_h(px(240.0))
+                .overflow_y_scroll();
+
             for (index, entry) in self.theme_options.clone().into_iter().enumerate() {
                 let selected = entry.id == self.selected_theme_id;
-                dropdown = dropdown.child(Self::dropdown_item(
+                list = list.child(Self::dropdown_item(
                     ("preferences-theme-option", index),
                     entry.name,
                     selected,
@@ -1093,6 +1101,7 @@ impl PreferencesWindow {
                     cx,
                 ));
             }
+            dropdown = dropdown.child(list);
         }
         self.labeled_row(&strings.preferences_local_theme, dropdown, theme)
     }

@@ -174,6 +174,32 @@ fn simulate_projection_build(fragments: &[MockFragment]) -> Option<(usize, Vec<u
     any_expanded.then_some((display_cursor, clean_to_display))
 }
 
+/// Pick the run of rows whose extent intersects the viewport band, from each
+/// row's content-space top. Mirrors the shape of `Editor::rendered_window`.
+fn windowed_run(tops: &[f32], row_height: f32, band_top: f32, band_bottom: f32) -> (usize, usize) {
+    let n = tops.len();
+    let start = tops
+        .iter()
+        .position(|&top| top + row_height >= band_top)
+        .unwrap_or(n);
+    let end = tops
+        .iter()
+        .rposition(|&top| top <= band_bottom)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    (start, end.max(start))
+}
+
+/// Stand-in for the per-row element construction skipped when a row is culled:
+/// a small allocation plus arithmetic, black-boxed so it is not optimized away.
+fn simulated_row_build(seed: usize) -> usize {
+    let mut buf = Vec::with_capacity(8);
+    for k in 0..8 {
+        buf.push(black_box(seed.wrapping_mul(31).wrapping_add(k)));
+    }
+    black_box(buf.iter().sum())
+}
+
 fn render_loop(c: &mut Criterion) {
     // Per-block fixtures.
     let theme_owned = MockTheme::new();
@@ -190,7 +216,7 @@ fn render_loop(c: &mut Criterion) {
     let epoch = Instant::now();
 
     let mut group = c.benchmark_group("render loop (per frame)");
-    for &n_blocks in &[50usize, 200usize] {
+    for &n_blocks in &[50usize, 200usize, 1_000usize, 5_000usize] {
         group.bench_with_input(
             BenchmarkId::new("baseline", n_blocks),
             &n_blocks,
@@ -235,6 +261,77 @@ fn render_loop(c: &mut Criterion) {
         );
     }
     group.finish();
+
+    // Viewport culling: per-row build work for every row vs only the on-screen
+    // window. The saving grows with document length.
+    let mut culling = c.benchmark_group("viewport culling (per frame)");
+    for &n_blocks in &[1_000usize, 5_000usize, 15_000usize, 30_000usize] {
+        let row_height = 50.0f32;
+        let tops: Vec<f32> = (0..n_blocks).map(|i| i as f32 * row_height).collect();
+        // A ~800px viewport band parked in the middle of the document.
+        let band_top = (n_blocks as f32 * row_height) * 0.5;
+        let band_bottom = band_top + 800.0;
+
+        culling.bench_with_input(
+            BenchmarkId::new("baseline (all rows)", n_blocks),
+            &n_blocks,
+            |b, &n_blocks| {
+                b.iter(|| {
+                    let mut acc = 0usize;
+                    for i in 0..n_blocks {
+                        acc += simulated_row_build(i);
+                    }
+                    black_box(acc);
+                });
+            },
+        );
+        culling.bench_with_input(
+            BenchmarkId::new("current (windowed)", n_blocks),
+            &n_blocks,
+            |b, &_n_blocks| {
+                b.iter(|| {
+                    let (start, end) =
+                        windowed_run(black_box(&tops), row_height, band_top, band_bottom);
+                    let mut acc = 0usize;
+                    for i in start..end {
+                        acc += simulated_row_build(i);
+                    }
+                    black_box(acc);
+                });
+            },
+        );
+
+        // Windowed path with ~1-in-20 unmeasured rows (unfocused math/mermaid),
+        // to check culling stays active when estimates are mixed in.
+        let measured: Vec<bool> = (0..n_blocks).map(|i| i % 20 != 0).collect();
+        culling.bench_with_input(
+            BenchmarkId::new("current (windowed, mixed structures)", n_blocks),
+            &n_blocks,
+            |b, &n_blocks| {
+                b.iter(|| {
+                    let mut tops_filled = vec![0.0f32; n_blocks];
+                    let mut cursor = 0.0f32;
+                    for i in 0..n_blocks {
+                        if measured[i] {
+                            tops_filled[i] = i as f32 * row_height;
+                            cursor = tops_filled[i] + row_height;
+                        } else {
+                            tops_filled[i] = cursor;
+                            cursor += row_height;
+                        }
+                    }
+                    let (start, end) =
+                        windowed_run(black_box(&tops_filled), row_height, band_top, band_bottom);
+                    let mut acc = 0usize;
+                    for i in start..end {
+                        acc += simulated_row_build(i);
+                    }
+                    black_box(acc);
+                });
+            },
+        );
+    }
+    culling.finish();
 }
 
 criterion_group!(benches, render_loop);

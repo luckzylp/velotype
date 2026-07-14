@@ -220,6 +220,21 @@ impl BlockKind {
         matches!(self, Self::Callout(_))
     }
 
+    /// Blocks edited as multi-line raw text that render as self-contained
+    /// widgets (code, math, HTML, mermaid, comment, raw markdown). Exiting one
+    /// downward with `Down` or `Ctrl/Cmd+Enter` needs a line below to land on.
+    pub fn is_multiline_text_block(&self) -> bool {
+        self.is_code_block()
+            || matches!(
+                self,
+                Self::MathBlock
+                    | Self::HtmlBlock
+                    | Self::MermaidBlock
+                    | Self::Comment
+                    | Self::RawMarkdown
+            )
+    }
+
     pub fn is_footnote_definition(&self) -> bool {
         matches!(self, Self::FootnoteDefinition)
     }
