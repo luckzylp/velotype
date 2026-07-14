@@ -681,13 +681,21 @@ impl Block {
     pub(crate) fn on_focus_next(
         &mut self,
         _: &FocusNext,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let preferred_x = self.vertical_anchor_x();
         if !self.move_cursor_vertically(1, preferred_x, cx) {
             if self.is_table_cell() {
                 cx.emit(BlockEvent::RequestTableCellMoveVertical { delta: 1 });
+                return;
+            }
+            // In a code block, Down from the last content line steps into the
+            // language field rather than leaving the block, so the language is
+            // reachable by keyboard. A further Down there exits the block.
+            if self.kind().is_code_block() && !self.code_language_focus_handle.is_focused(window) {
+                self.code_language_focus_handle.focus(window);
+                cx.notify();
                 return;
             }
             cx.emit(BlockEvent::RequestFocusNext {
@@ -1250,8 +1258,10 @@ impl Block {
             return;
         }
         cx.stop_propagation();
-        self.focus_handle.focus(window);
-        cx.notify();
+        // Down from the language field leaves the code block: the editor focuses
+        // the block below, creating a trailing paragraph first when the code
+        // block is the last block. Enter does not exit (see on_code_language_newline).
+        cx.emit(BlockEvent::RequestFocusNext { preferred_x: None });
     }
 
     pub(crate) fn on_code_language_indent(
@@ -1663,16 +1673,7 @@ impl Block {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let exits_multiline_block = self.is_table_cell()
-            || self.kind().is_code_block()
-            || matches!(
-                self.kind(),
-                BlockKind::MathBlock
-                    | BlockKind::HtmlBlock
-                    | BlockKind::MermaidBlock
-                    | BlockKind::RawMarkdown
-                    | BlockKind::Comment
-            );
+        let exits_multiline_block = self.is_table_cell() || self.kind().is_multiline_text_block();
 
         if exits_multiline_block {
             cx.emit(BlockEvent::RequestNewline {

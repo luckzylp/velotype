@@ -9,9 +9,9 @@ use gpui::{
 
 use super::{Editor, ViewMode};
 use crate::components::{
-    BlockKind, CloseWindow, ImageReferenceDefinitions, ImageResolvedSource, InlineTextTree,
-    QuitApplication, SaveDocument, TableCellInlineImageSegment, TableColumnAlignment,
-    parse_table_cell_inline_images, superscript_ordinal,
+    BlockKind, CloseWindow, FocusNext, ImageReferenceDefinitions, ImageResolvedSource,
+    InlineTextTree, Newline, QuitApplication, SaveDocument, TableCellInlineImageSegment,
+    TableColumnAlignment, parse_table_cell_inline_images, superscript_ordinal,
 };
 use crate::export::ExportFormat;
 use crate::i18n::{I18nManager, I18nStrings};
@@ -2832,6 +2832,84 @@ async fn captured_tab_key_inserts_visible_indent_in_paragraph(cx: &mut TestAppCo
     editor.update(cx, |editor, cx| {
         let block = editor.document.visible_blocks()[0].entity.clone();
         assert_eq!(block.read(cx).display_text(), "a    b");
+    });
+}
+
+#[gpui::test]
+async fn down_from_code_content_focuses_language_input(cx: &mut TestAppContext) {
+    init_editor_test_app(cx);
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        Editor::from_markdown(cx, "```rust\nab\n```".to_string(), None)
+    });
+
+    // Settle focus on the code content first (and clear any pending focus that a
+    // later redraw would otherwise re-apply and steal back).
+    editor.update_in(cx, |editor, _window, cx| {
+        let block = editor.document.visible_blocks()[0].entity.clone();
+        editor.focus_block(block.entity_id());
+    });
+    redraw(cx);
+
+    editor.update_in(cx, |editor, window, cx| {
+        let block = editor.document.visible_blocks()[0].entity.clone();
+        block.update(cx, |block, block_cx| {
+            block.move_to(block.visible_len(), block_cx);
+            block.on_focus_next(&FocusNext, window, block_cx);
+        });
+        assert!(
+            block.read(cx).code_language_focus_handle.is_focused(window),
+            "Down from the last code line should focus the language field"
+        );
+    });
+}
+
+#[gpui::test]
+async fn down_from_code_language_at_document_end_creates_trailing_paragraph(
+    cx: &mut TestAppContext,
+) {
+    init_editor_test_app(cx);
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        Editor::from_markdown(cx, "```rust\nab\n```".to_string(), None)
+    });
+
+    editor.update_in(cx, |editor, window, cx| {
+        let block = editor.document.visible_blocks()[0].entity.clone();
+        editor.focus_block(block.entity_id());
+        block.update(cx, |block, block_cx| {
+            block.code_language_focus_handle.focus(window);
+            block.on_code_language_focus_next(&FocusNext, window, block_cx);
+        });
+    });
+    redraw(cx);
+
+    editor.update(cx, |editor, cx| {
+        let roots = editor.document.root_blocks();
+        assert_eq!(roots.len(), 2, "a trailing paragraph should be created");
+        assert_eq!(roots[1].read(cx).kind(), BlockKind::Paragraph);
+        assert_eq!(roots[1].read(cx).display_text(), "");
+    });
+}
+
+#[gpui::test]
+async fn enter_in_code_language_does_not_exit_block(cx: &mut TestAppContext) {
+    init_editor_test_app(cx);
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        Editor::from_markdown(cx, "```rust\nab\n```".to_string(), None)
+    });
+
+    editor.update_in(cx, |editor, window, cx| {
+        let block = editor.document.visible_blocks()[0].entity.clone();
+        editor.focus_block(block.entity_id());
+        block.update(cx, |block, block_cx| {
+            block.code_language_focus_handle.focus(window);
+            block.on_code_language_newline(&Newline, window, block_cx);
+        });
+    });
+    redraw(cx);
+
+    editor.update(cx, |editor, cx| {
+        // Enter must not leave the block, so no trailing paragraph appears.
+        assert_eq!(editor.document.root_count(), 1);
     });
 }
 
