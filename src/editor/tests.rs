@@ -2844,7 +2844,7 @@ async fn down_from_code_content_focuses_language_input(cx: &mut TestAppContext) 
 
     // Settle focus on the code content first (and clear any pending focus that a
     // later redraw would otherwise re-apply and steal back).
-    editor.update_in(cx, |editor, _window, cx| {
+    editor.update_in(cx, |editor, _window, _cx| {
         let block = editor.document.visible_blocks()[0].entity.clone();
         editor.focus_block(block.entity_id());
     });
@@ -2907,7 +2907,7 @@ async fn enter_in_code_language_does_not_exit_block(cx: &mut TestAppContext) {
     });
     redraw(cx);
 
-    editor.update(cx, |editor, cx| {
+    editor.update(cx, |editor, _cx| {
         // Enter must not leave the block, so no trailing paragraph appears.
         assert_eq!(editor.document.root_count(), 1);
     });
